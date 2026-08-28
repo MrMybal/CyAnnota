@@ -72,6 +72,8 @@ type VideoWorkspaceProps = {
   onAddVideo?: () => void;
   onSaveWorkspace?: () => void;
   onExportWorkspace?: () => void;
+  onEditWorkspaceMessage?: () => void;
+  workspaceInstructions?: string;
   workspaceStatus?: string;
   workspaceBusy?: boolean;
   locale: AppLocale;
@@ -546,6 +548,8 @@ export default function VideoAnnotator({
   onAddVideo,
   onSaveWorkspace,
   onExportWorkspace,
+  onEditWorkspaceMessage,
+  workspaceInstructions = '',
   workspaceStatus,
   workspaceBusy = false,
   locale,
@@ -1251,7 +1255,18 @@ export default function VideoAnnotator({
   }
 
   function buildPrompt() {
-    return buildVideoPrompt(createVideoDeliveryProject(projectData()), locale);
+    const prompt = buildVideoPrompt(createVideoDeliveryProject(projectData()), locale);
+    const message = workspaceInstructions.trim();
+    if (!message) return prompt;
+    return [
+      t('# Workspace-wide message', '# Message global de l’espace de travail'),
+      '', message, '',
+      t(
+        'This instruction applies to every image and video tab in this package.',
+        'Cette consigne s’applique à tous les onglets image et vidéo de ce paquet.',
+      ),
+      '', prompt,
+    ].join('\n');
   }
   function projectData(): VideoProjectData {
     const sourcePath = initialProject?.sourcePath || 'media/original-' + safeFileName(file.name);
@@ -1572,6 +1587,12 @@ export default function VideoAnnotator({
             </select>
           </label>
           <span className="video-local-badge">● 100% local</span>
+          {onEditWorkspaceMessage && (
+            <button
+              className={'button ghost compact workspace-message-button' + (workspaceInstructions.trim() ? ' active' : '')}
+              onClick={onEditWorkspaceMessage}
+            >{t('Global message', 'Message global')}</button>
+          )}
           {onOpenWorkspace && <button className="button ghost compact" onClick={onOpenWorkspace}>{t('Open', 'Ouvrir')}</button>}
           {onAddImage && <button className="button ghost compact" onClick={onAddImage}>{t('Image', 'Image')}</button>}
           {onAddVideo && <button className="button ghost compact" onClick={onAddVideo}>{t('Video', 'Vidéo')}</button>}
