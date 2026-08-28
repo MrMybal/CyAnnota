@@ -23,6 +23,7 @@ extraResources:
     to: legal/licenses
 
 win:
+  icon: ../public/cyannota-logo.png
   target:
     - target: portable
       arch:

@@ -116,6 +116,7 @@
           exportAudience: options.exportAudience === 'human' ? 'human' : 'ai',
           exportContainer: options.exportContainer === 'project' ? 'project' : 'zip',
           includeOriginalVideos: options.includeOriginalVideos === true,
+          locale: options.locale === 'fr' ? 'fr' : 'en',
         }, editorUrl.origin);
         readyResolve({ session: session, capabilities: message.capabilities || {} });
         if (typeof options.onReady === 'function') options.onReady(message.capabilities || {});

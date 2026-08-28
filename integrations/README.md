@@ -30,6 +30,7 @@ Servir le SDK `public/cyannota-integration.js`, puis l’appeler depuis un clic 
       exportAudience: 'human',
       exportContainer: 'project',
       includeOriginalVideos: false,
+      locale: 'fr',
       async onSave({ attachmentId, document, exportPreferences }) {
         await saveLocally(attachmentId, document, exportPreferences);
         return { revision: 1 };
@@ -40,7 +41,7 @@ Servir le SDK `public/cyannota-integration.js`, puis l’appeler depuis un clic 
 </script>
 ```
 
-Le protocole est `cyannota.integration`, version `1`. Les messages sont acceptés uniquement depuis la fenêtre d’origine et l’origine HTTP(S) exacte annoncée dans l’URL. L’hôte peut choisir les valeurs initiales d’export et récupère les éventuelles modifications de l’utilisateur dans `exportPreferences`.
+Le protocole est `cyannota.integration`, version `1`. Les messages sont acceptés uniquement depuis la fenêtre d’origine et l’origine HTTP(S) exacte annoncée dans l’URL. L’hôte peut choisir les valeurs initiales d’export et récupère les éventuelles modifications de l’utilisateur dans `exportPreferences`. `locale` accepte `en` ou `fr` et vaut `en` par défaut ; cette langue s’applique à l’interface ainsi qu’aux prompts. Les capacités retournées par CyAnnota annoncent `locales: ['en', 'fr']` et `defaultLocale: 'en'`.
 
 Pour CyTask, utiliser `integrationId: 'cytask'` et conserver le document d’annotations à côté de la pièce jointe. L’image ou la vidéo originale n’est pas dupliquée dans ce document ; CyTask demeure propriétaire du média et de son stockage.
 
