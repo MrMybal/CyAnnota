@@ -1,5 +1,9 @@
 # CyAnnota
 
+<p align="center"><img src="public/cyannota-logo.png" alt="Logo CyAnnota" width="160" /></p>
+
+<p align="center"><img src="public/cyannota-logo.png" alt="Logo CyAnnota" width="160" /></p>
+
 CyAnnota est un outil local d’annotation d’interfaces pour images et vidéos. Il permet de préparer des corrections visuelles, des arrêts sur image, des exports destinés à une personne ou à une IA, ainsi que des projets réouvrables au format `.cyannota`.
 
 ## Fonctions principales
@@ -11,6 +15,8 @@ CyAnnota est un outil local d’annotation d’interfaces pour images et vidéos
 - exports Humain sans prompt et exports IA avec prompts structurés ;
 - intégration locale avec CyTask, CyCapture et des applications Web ;
 - application Web locale et application Windows Electron.
+- interface et prompts en anglais ou en français, avec l’anglais par défaut.
+- interface et prompts en anglais ou en français, avec l’anglais par défaut.
 
 ## Développement
 

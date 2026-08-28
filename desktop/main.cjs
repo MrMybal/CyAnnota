@@ -394,6 +394,7 @@ function createMainWindow() {
     autoHideMenuBar: true,
     backgroundColor: '#151514',
     title: 'CyAnnota',
+    icon: path.join(__dirname, 'dist', 'renderer', 'cyannota-logo.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,

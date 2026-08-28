@@ -1,6 +1,13 @@
 'use client';
 
 import JSZip from 'jszip';
+import {
+  DEFAULT_LOCALE,
+  LOCALE_STORAGE_KEY,
+  isAppLocale,
+  translate,
+  type AppLocale,
+} from './i18n';
 import VideoAnnotator, {
   buildVideoPrompt,
   createVideoDeliveryProject,
@@ -177,6 +184,7 @@ type IntegrationBridgeMessage = {
   exportAudience?: unknown;
   exportContainer?: unknown;
   includeOriginalVideos?: unknown;
+  locale?: unknown;
   ok?: unknown;
   revision?: unknown;
   error?: unknown;
@@ -199,70 +207,64 @@ type VideoBoardTab = {
 
 type BoardTab = ImageBoardTab | VideoBoardTab;
 
-const INITIAL_LAYERS: Layer[] = [
-  { id: 'ui', name: 'Corrections UI', color: '#ff5c49', visible: true },
-  { id: 'questions', name: 'Questions', color: '#e9ad4a', visible: true },
-];
+function initialLayers(locale: AppLocale = DEFAULT_LOCALE): Layer[] {
+  return [
+    { id: 'ui', name: translate(locale, 'UI corrections', 'Corrections UI'), color: '#ff5c49', visible: true },
+    { id: 'questions', name: 'Questions', color: '#e9ad4a', visible: true },
+  ];
+}
 
-function createBlankProject(): ProjectFile {
+function createBlankProject(locale: AppLocale = DEFAULT_LOCALE): ProjectFile {
   return {
     version: 1,
-    title: 'Corrections interface',
+    title: translate(locale, 'Interface corrections', 'Corrections interface'),
     globalInstructions: '',
     image: null,
-    layers: structuredClone(INITIAL_LAYERS),
+    layers: initialLayers(locale),
     annotations: [],
   };
 }
 
-const TOOL_LABELS: Record<Tool, string> = {
-  select: 'Sélectionner et déplacer',
-  pan: 'Main — déplacer la vue',
-  frame: 'Cadre de groupe',
-  shape: 'Forme simple',
-  rect: 'Encadrer une zone',
-  arrow: 'Tracer une flèche',
-  text: 'Placer une note',
-  draw: 'Dessiner librement',
-  cut: 'Découpe rectangulaire',
-  polycut: 'Découpe polygonale',
-  delete: 'Zone à supprimer',
-  eyedropper: 'Pipette de couleur',
+const TOOL_LABELS: Record<AppLocale, Record<Tool, string>> = {
+  en: {
+    select: 'Select and move', pan: 'Hand — move view', frame: 'Group frame', shape: 'Simple shape',
+    rect: 'Frame an area', arrow: 'Draw an arrow', text: 'Place a note', draw: 'Freehand draw',
+    cut: 'Rectangular cutout', polycut: 'Polygonal cutout', delete: 'Delete area', eyedropper: 'Color picker',
+  },
+  fr: {
+    select: 'Sélectionner et déplacer', pan: 'Main — déplacer la vue', frame: 'Cadre de groupe', shape: 'Forme simple',
+    rect: 'Encadrer une zone', arrow: 'Tracer une flèche', text: 'Placer une note', draw: 'Dessiner librement',
+    cut: 'Découpe rectangulaire', polycut: 'Découpe polygonale', delete: 'Zone à supprimer', eyedropper: 'Pipette de couleur',
+  },
 };
 
-const TOOL_HELP: Record<Tool, string> = {
-  select: 'Clique une correction ou une découpe pour la déplacer.',
-  pan: 'Fais glisser l’image. Raccourcis : clic droit ou Espace + glisser.',
-  frame: 'Crée un cadre ; les formes et textes posés dedans lui seront liés.',
-  shape: 'Dessine une forme simple, puis choisis rectangle, ellipse ou ligne.',
-  rect: 'Glisse autour de la zone à corriger.',
-  arrow: 'Glisse du point de départ vers la cible.',
-  text: 'Clique à l’endroit où placer une note.',
-  draw: 'Maintiens et dessine directement sur la capture.',
-  cut: 'Glisse autour d’un élément, puis déplace la découpe créée.',
-  polycut: 'Clique les sommets puis double-clique ou clique le premier point pour fermer.',
-  delete: 'Encadre une zone : elle sera automatiquement marquée à supprimer.',
-  eyedropper: 'Clique une couleur, puis choisis la couleur de remplacement.',
+const TOOL_HELP: Record<AppLocale, Record<Tool, string>> = {
+  en: {
+    select: 'Click a correction or cutout to move it.', pan: 'Drag the image. Shortcuts: right-click or Space + drag.',
+    frame: 'Create a frame; shapes and text placed inside will be linked to it.', shape: 'Draw a simple shape, then choose rectangle, ellipse, or line.',
+    rect: 'Drag around the area to correct.', arrow: 'Drag from the starting point to the target.', text: 'Click where you want to place a note.',
+    draw: 'Hold and draw directly on the capture.', cut: 'Drag around an element, then move the created cutout.',
+    polycut: 'Click the vertices, then double-click or click the first point to close.', delete: 'Frame an area to mark it automatically for deletion.',
+    eyedropper: 'Pick a color, then choose its replacement.',
+  },
+  fr: {
+    select: 'Clique une correction ou une découpe pour la déplacer.', pan: 'Fais glisser l’image. Raccourcis : clic droit ou Espace + glisser.',
+    frame: 'Crée un cadre ; les formes et textes posés dedans lui seront liés.', shape: 'Dessine une forme simple, puis choisis rectangle, ellipse ou ligne.',
+    rect: 'Glisse autour de la zone à corriger.', arrow: 'Glisse du point de départ vers la cible.', text: 'Clique à l’endroit où placer une note.',
+    draw: 'Maintiens et dessine directement sur la capture.', cut: 'Glisse autour d’un élément, puis déplace la découpe créée.',
+    polycut: 'Clique les sommets puis double-clique ou clique le premier point pour fermer.', delete: 'Encadre une zone : elle sera automatiquement marquée à supprimer.',
+    eyedropper: 'Clique une couleur, puis choisis la couleur de remplacement.',
+  },
 };
 
-const CATEGORY_LABELS: Record<Category, string> = {
-  modifier: 'Modifier',
-  ajouter: 'Ajouter',
-  supprimer: 'Supprimer',
-  deplacer: 'Déplacer',
-  question: 'Question',
+const CATEGORY_LABELS: Record<AppLocale, Record<Category, string>> = {
+  en: { modifier: 'Modify', ajouter: 'Add', supprimer: 'Delete', deplacer: 'Move', question: 'Question' },
+  fr: { modifier: 'Modifier', ajouter: 'Ajouter', supprimer: 'Supprimer', deplacer: 'Déplacer', question: 'Question' },
 };
 
-const TYPE_LABELS: Record<Annotation['type'], string> = {
-  rect: 'Zone',
-  arrow: 'Flèche',
-  text: 'Note',
-  draw: 'Dessin',
-  cut: 'Découpe déplacée',
-  frame: 'Cadre de groupe',
-  shape: 'Forme',
-  delete: 'Zone supprimée',
-  color: 'Couleur',
+const TYPE_LABELS: Record<AppLocale, Record<Annotation['type'], string>> = {
+  en: { rect: 'Area', arrow: 'Arrow', text: 'Note', draw: 'Drawing', cut: 'Moved cutout', frame: 'Group frame', shape: 'Shape', delete: 'Deleted area', color: 'Color' },
+  fr: { rect: 'Zone', arrow: 'Flèche', text: 'Note', draw: 'Dessin', cut: 'Découpe déplacée', frame: 'Cadre de groupe', shape: 'Forme', delete: 'Zone supprimée', color: 'Couleur' },
 };
 
 function createId() {
@@ -549,15 +551,17 @@ async function readDraft() {
 }
 
 export default function Home() {
+  const [locale, setLocale] = useState<AppLocale>(DEFAULT_LOCALE);
+  const t = (english: string, french: string) => translate(locale, english, french);
   const [tool, setTool] = useState<Tool>('select');
   const [tabs, setTabs] = useState<BoardTab[]>([
-    { id: 'board-1', label: 'Nouvelle image', kind: 'image', project: createBlankProject() },
+    { id: 'board-1', label: 'New image', kind: 'image', project: createBlankProject(DEFAULT_LOCALE) },
   ]);
   const [activeTabId, setActiveTabId] = useState('board-1');
   const [imageSource, setImageSource] = useState<string | null>(null);
   const [imageName, setImageName] = useState('Aucune capture');
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
-  const [layers, setLayers] = useState<Layer[]>(INITIAL_LAYERS);
+  const [layers, setLayers] = useState<Layer[]>(() => initialLayers(DEFAULT_LOCALE));
   const [activeLayerId, setActiveLayerId] = useState('ui');
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -566,7 +570,7 @@ export default function Home() {
   const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
   const [past, setPast] = useState<Annotation[][]>([]);
   const [future, setFuture] = useState<Annotation[][]>([]);
-  const [projectTitle, setProjectTitle] = useState('Corrections interface');
+  const [projectTitle, setProjectTitle] = useState('Interface corrections');
   const [globalInstructions, setGlobalInstructions] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
   const [exportPrompt, setExportPrompt] = useState('');
@@ -576,7 +580,7 @@ export default function Home() {
   const [exportProgressLabel, setExportProgressLabel] = useState('');
   const [isExporting, setIsExporting] = useState(false);
   const [hasLocalDraft, setHasLocalDraft] = useState(false);
-  const [saveStatus, setSaveStatus] = useState('Prêt');
+  const [saveStatus, setSaveStatus] = useState('Ready');
   const [renderTick, setRenderTick] = useState(0);
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const [importNotice, setImportNotice] = useState('');
@@ -603,6 +607,7 @@ export default function Home() {
   const panRef = useRef<Point>(pan);
   const integrationBridgeRef = useRef<IntegrationBridge | null>(null);
   const encodedVideoCacheRef = useRef(new Map<string, { signature: string; blob: Blob }>());
+  const localeReadyRef = useRef(false);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) || tabs[0];
   const hasExportableMedia = tabs.some(
@@ -618,6 +623,30 @@ export default function Home() {
   useEffect(() => {
     annotationsRef.current = annotations;
   }, [annotations]);
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+    if (isAppLocale(saved) && saved !== DEFAULT_LOCALE) {
+      const timer = window.setTimeout(() => {
+        localeReadyRef.current = true;
+        setLocale(saved);
+        setProjectTitle((current) => current === 'Interface corrections' ? 'Corrections interface' : current);
+        setLayers((items) => items.map((layer) => ({
+          ...layer,
+          name: layer.name === 'UI corrections' ? 'Corrections UI' : layer.name,
+        })));
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+    localeReadyRef.current = true;
+    document.documentElement.lang = DEFAULT_LOCALE;
+  }, []);
+
+  useEffect(() => {
+    if (!localeReadyRef.current) return;
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+    document.documentElement.lang = locale;
+  }, [locale]);
 
   useEffect(() => {
     zoomRef.current = zoom;
@@ -657,8 +686,8 @@ export default function Home() {
 
       if (message.type === 'open-media' && message.attachmentId === attachmentId) {
         openIntegrationMedia(message, parentOrigin, session, attachmentId, providerId, providerLabel).catch((error) => {
-          const text = error instanceof Error ? error.message : 'Média d’intégration invalide';
-          setSaveStatus('Échec du chargement ' + providerLabel);
+          const text = error instanceof Error ? error.message : t('Invalid integration media', 'Média d’intégration invalide');
+          setSaveStatus(t('Failed to load ', 'Échec du chargement ') + providerLabel);
           showImportNotice(text);
         });
         return;
@@ -668,15 +697,15 @@ export default function Home() {
         if (message.ok === true) {
           setSaveStatus(
             typeof message.revision === 'number'
-              ? 'Enregistré dans ' + providerLabel + ' · rév. ' + message.revision
-              : 'Enregistré dans ' + providerLabel,
+              ? t('Saved to ', 'Enregistré dans ') + providerLabel + t(' · rev. ', ' · rév. ') + message.revision
+              : t('Saved to ', 'Enregistré dans ') + providerLabel,
           );
-          showImportNotice('Annotations enregistrées dans ' + providerLabel);
+          showImportNotice(t('Annotations saved to ', 'Annotations enregistrées dans ') + providerLabel);
         } else {
           const text = typeof message.error === 'string'
             ? message.error
-            : providerLabel + ' a refusé la sauvegarde';
-          setSaveStatus('Sauvegarde ' + providerLabel + ' refusée');
+            : providerLabel + t(' rejected the save', ' a refusé la sauvegarde');
+          setSaveStatus(t('Save rejected by ', 'Sauvegarde ') + providerLabel + t('', ' refusée'));
           showImportNotice(text);
         }
       }
@@ -694,6 +723,8 @@ export default function Home() {
         exportAudiences: ['ai', 'human'],
         exportContainers: ['zip', 'project'],
         projectExtension: '.cyannota',
+        locales: ['en', 'fr'],
+        defaultLocale: DEFAULT_LOCALE,
       },
     }, parentOrigin);
     return () => window.removeEventListener('message', receive);
@@ -720,8 +751,8 @@ export default function Home() {
         }
       })().catch((error) => {
         const detail = error instanceof Error ? error.message : String(error);
-        setSaveStatus('Ouverture externe impossible');
-        showImportNotice('CyAnnota ne peut pas ouvrir le fichier : ' + detail);
+        setSaveStatus(t('External open failed', 'Ouverture externe impossible'));
+        showImportNotice(t('CyAnnota cannot open the file: ', 'CyAnnota ne peut pas ouvrir le fichier : ') + detail);
       });
     });
   });
@@ -767,6 +798,7 @@ export default function Home() {
     if (typeof message.includeOriginalVideos === 'boolean') {
       setIncludeOriginalVideosInExport(message.includeOriginalVideos);
     }
+    if (isAppLocale(message.locale)) changeLocale(message.locale);
 
     if (message.mediaKind === 'video') {
       const project = isRecord(message.document)
@@ -781,7 +813,7 @@ export default function Home() {
       const dataUrl = await readAsDataUrl(file);
       const project = isRecord(message.document)
         ? structuredClone(message.document) as unknown as ProjectFile
-        : createBlankProject();
+        : createBlankProject(locale);
       if (project.version !== 1 || !Array.isArray(project.layers)
         || !Array.isArray(project.annotations)) {
         throw new Error('Le projet image transmis est invalide.');
@@ -795,11 +827,11 @@ export default function Home() {
       setTool('select');
     }
 
-    setSaveStatus(bridge.readOnly ? 'Consultation ' + providerLabel : 'Lié à ' + providerLabel + ' · prêt');
+    setSaveStatus(bridge.readOnly ? t('Viewing ', 'Consultation ') + providerLabel : t('Linked to ', 'Lié à ') + providerLabel + t(' · ready', ' · prêt'));
     showImportNotice(
       bridge.readOnly
-        ? 'Média ' + providerLabel + ' ouvert en consultation'
-        : 'Média ' + providerLabel + ' prêt à annoter',
+        ? t('Media from ', 'Média ') + providerLabel + t(' opened read-only', ' ouvert en consultation')
+        : t('Media from ', 'Média ') + providerLabel + t(' ready to annotate', ' prêt à annoter'),
     );
   }
 
@@ -807,8 +839,8 @@ export default function Home() {
     const bridge = integrationBridgeRef.current;
     if (!bridge || !window.opener) return false;
     if (bridge.readOnly) {
-      setSaveStatus('Consultation seule');
-      showImportNotice(bridge.providerLabel + ' ne permet pas de modifier les annotations');
+      setSaveStatus(t('Read-only', 'Consultation seule'));
+      showImportNotice(bridge.providerLabel + t(' does not allow annotation changes', ' ne permet pas de modifier les annotations'));
       return false;
     }
 
@@ -820,8 +852,8 @@ export default function Home() {
     }
     const size = new Blob([JSON.stringify(clean)]).size;
     if (size > bridge.maximumDocumentBytes) {
-      setSaveStatus('Document ' + bridge.providerLabel + ' trop volumineux');
-      showImportNotice('Réduisez les captures de référence avant de sauver');
+      setSaveStatus(t('Document for ', 'Document ') + bridge.providerLabel + t(' is too large', ' trop volumineux'));
+      showImportNotice(t('Reduce reference captures before saving', 'Réduisez les captures de référence avant de sauver'));
       return false;
     }
 
@@ -837,9 +869,10 @@ export default function Home() {
         audience: exportAudience,
         container: exportContainer,
         includeOriginalVideos: includeOriginalVideosInExport,
+        locale,
       },
     }, bridge.parentOrigin);
-    setSaveStatus('Enregistrement dans ' + bridge.providerLabel + '…');
+    setSaveStatus(t('Saving to ', 'Enregistrement dans ') + bridge.providerLabel + '…');
     return true;
   }
 
@@ -854,17 +887,45 @@ export default function Home() {
     };
   }
 
+  function changeLocale(nextLocale: AppLocale) {
+    if (nextLocale === locale) return;
+    setLocale(nextLocale);
+    setProjectTitle((current) =>
+      current === 'Interface corrections' || current === 'Corrections interface'
+        ? translate(nextLocale, 'Interface corrections', 'Corrections interface')
+        : current,
+    );
+    setLayers((items) => items.map((layer) => ({
+      ...layer,
+      name: layer.name === 'UI corrections' || layer.name === 'Corrections UI'
+        ? translate(nextLocale, 'UI corrections', 'Corrections UI')
+        : layer.name,
+    })));
+    setSaveStatus((current) =>
+      current === 'Ready' || current === 'Prêt'
+        ? translate(nextLocale, 'Ready', 'Prêt')
+        : current,
+    );
+    if (exportOpen) {
+      setExportPrompt(
+        activeTab?.kind === 'video'
+          ? buildVideoPrompt(createVideoDeliveryProject(activeTab.project, includeOriginalVideosInExport), nextLocale)
+          : buildPrompt(projectData(), nextLocale),
+      );
+    }
+  }
+
   function applyProject(project: ProjectFile) {
     if (project.version !== 1 || !Array.isArray(project.layers) || !Array.isArray(project.annotations)) {
       throw new Error('Format de projet CyAnnota invalide');
     }
-    setProjectTitle(project.title || 'Corrections interface');
+    setProjectTitle(project.title || t('Interface corrections', 'Corrections interface'));
     setGlobalInstructions(project.globalInstructions || '');
-    setLayers(project.layers.length ? project.layers : INITIAL_LAYERS);
+    setLayers(project.layers.length ? project.layers : initialLayers(locale));
     setActiveLayerId(project.layers[0]?.id || 'ui');
     setAnnotations(project.annotations);
     setImageSource(project.image?.src || null);
-    setImageName(project.image?.name || 'Aucune capture');
+    setImageName(project.image?.name || t('No capture', 'Aucune capture'));
     setSelectedId(null);
     setPast([]);
     setFuture([]);
@@ -897,7 +958,7 @@ export default function Home() {
     }
   }
 
-  function createTab(project: ProjectFile = createBlankProject(), label = 'Nouvelle image') {
+  function createTab(project: ProjectFile = createBlankProject(locale), label = t('New image', 'Nouvelle image')) {
     const id = createId();
     const nextTab: ImageBoardTab = {
       id,
@@ -913,8 +974,8 @@ export default function Home() {
 
   function closeTab(tabId: string) {
     if (tabs.length === 1) {
-      const project = createBlankProject();
-      setTabs([{ id: tabs[0].id, label: 'Nouvelle image', kind: 'image', project }]);
+      const project = createBlankProject(locale);
+      setTabs([{ id: tabs[0].id, label: t('New image', 'Nouvelle image'), kind: 'image', project }]);
       setActiveTabId(tabs[0].id);
       applyProject(project);
       return;
@@ -942,7 +1003,7 @@ export default function Home() {
         tab.id === activeTabId && tab.kind === 'image'
           ? {
               ...tab,
-              label: snapshot.image?.name || snapshot.title || 'Nouvelle image',
+              label: snapshot.image?.name || snapshot.title || t('New image', 'Nouvelle image'),
               project: snapshot,
             }
           : tab,
@@ -1012,14 +1073,14 @@ export default function Home() {
 
   useEffect(() => {
     if (!imageSource || integrationBridgeRef.current) return;
-    setSaveStatus('Enregistrement…');
+    setSaveStatus(t('Saving…', 'Enregistrement…'));
     const timeout = window.setTimeout(() => {
       storeDraft(projectData())
         .then(() => {
-          setSaveStatus('Enregistré localement');
+          setSaveStatus(t('Saved locally', 'Enregistré localement'));
           setHasLocalDraft(true);
         })
-        .catch(() => setSaveStatus('Sauvegarde manuelle conseillée'));
+        .catch(() => setSaveStatus(t('Manual save recommended', 'Sauvegarde manuelle conseillée')));
     }, 650);
     return () => window.clearTimeout(timeout);
   }, [imageSource, imageName, annotations, layers, projectTitle, globalInstructions]);
@@ -1121,7 +1182,7 @@ export default function Home() {
       );
       const childCount = sourceAnnotations.filter((item) => item.groupId === annotation.id).length;
       context.font = '800 ' + 9 * unit + 'px Arial';
-      const frameLabel = 'CADRE · ' + childCount + ' ÉLÉMENT' + (childCount > 1 ? 'S' : '');
+      const frameLabel = t('FRAME · ', 'CADRE · ') + childCount + (childCount === 1 ? t(' ITEM', ' ÉLÉMENT') : t(' ITEMS', ' ÉLÉMENTS'));
       const frameLabelWidth = context.measureText(frameLabel).width + 16 * unit;
       context.fillStyle = annotation.color;
       context.fillRect(annotation.x, annotation.y - 21 * unit, frameLabelWidth, 21 * unit);
@@ -1674,7 +1735,7 @@ export default function Home() {
       sampledColor,
       replacementColor: '#ffffff',
     });
-    showImportNotice('Couleur capturée : ' + sampledColor);
+    showImportNotice(t('Color sampled: ', 'Couleur capturée : ') + sampledColor);
     setTool('select');
   }
 
@@ -1714,7 +1775,7 @@ export default function Home() {
 
     const base = baseAnnotation(
       'deplacer',
-      'Déplacer cet élément découpé selon le contour polygonal.',
+      t('Move this cutout along its polygon outline.', 'Déplacer cet élément découpé selon le contour polygonal.'),
       points[0],
     );
     const annotation: CutAnnotation = {
@@ -1788,7 +1849,7 @@ export default function Home() {
     }
 
     if (tool === 'text') {
-      const base = baseAnnotation('modifier', 'Écris ici ton message lié à cette zone.', point);
+      const base = baseAnnotation('modifier', t('Write your message linked to this area here.', 'Écris ici ton message lié à cette zone.'), point);
       addAnnotation({ ...base, type: 'text', x: point.x, y: point.y });
       setTool('select');
       return;
@@ -1866,7 +1927,7 @@ export default function Home() {
     if (value.tool === 'frame') {
       const base = baseAnnotation(
         'modifier',
-        'Tous les éléments placés dans ce cadre font partie de la même correction.',
+        t('Every item placed inside this frame belongs to the same correction.', 'Tous les éléments placés dans ce cadre font partie de la même correction.'),
       );
       addAnnotation({ ...base, type: 'frame', ...bounds, groupId: undefined });
     }
@@ -1874,7 +1935,7 @@ export default function Home() {
     if (value.tool === 'shape') {
       const base = baseAnnotation(
         'ajouter',
-        'Ajouter cette forme dans le cadre associé.',
+        t('Add this shape to the linked frame.', 'Ajouter cette forme dans le cadre associé.'),
         value.start,
       );
       addAnnotation({
@@ -1889,19 +1950,19 @@ export default function Home() {
     if (value.tool === 'delete') {
       const base = baseAnnotation(
         'supprimer',
-        'Supprimer tous les éléments présents dans cette zone.',
+        t('Delete every item inside this area.', 'Supprimer tous les éléments présents dans cette zone.'),
         value.start,
       );
       addAnnotation({ ...base, type: 'delete', ...bounds, color: '#ff453a' });
     }
 
     if (value.tool === 'rect') {
-      const base = baseAnnotation('modifier', 'Décris précisément ce qui doit changer dans cette zone.', value.start);
+      const base = baseAnnotation('modifier', t('Describe precisely what should change in this area.', 'Décris précisément ce qui doit changer dans cette zone.'), value.start);
       addAnnotation({ ...base, type: 'rect', ...bounds });
     }
 
     if (value.tool === 'arrow') {
-      const base = baseAnnotation('modifier', 'Décris la correction indiquée par cette flèche.', value.start);
+      const base = baseAnnotation('modifier', t('Describe the correction indicated by this arrow.', 'Décris la correction indiquée par cette flèche.'), value.start);
       addAnnotation({
         ...base,
         type: 'arrow',
@@ -1913,7 +1974,7 @@ export default function Home() {
     }
 
     if (value.tool === 'draw' && value.points.length > 1) {
-      const base = baseAnnotation('modifier', 'Décris la correction dessinée sur la capture.', value.points[0]);
+      const base = baseAnnotation('modifier', t('Describe the correction drawn on the capture.', 'Décris la correction dessinée sur la capture.'), value.points[0]);
       addAnnotation({ ...base, type: 'draw', points: value.points });
     }
 
@@ -1940,7 +2001,7 @@ export default function Home() {
           source.w,
           source.h,
         );
-      const base = baseAnnotation('deplacer', 'Déplacer cet élément vers la nouvelle position indiquée.', value.start);
+      const base = baseAnnotation('deplacer', t('Move this item to the indicated new position.', 'Déplacer cet élément vers la nouvelle position indiquée.'), value.start);
       const annotation: CutAnnotation = {
         ...base,
         type: 'cut',
@@ -1966,7 +2027,7 @@ export default function Home() {
   function loadVideoFile(file?: File, project?: VideoProjectData, fromIntegration = false) {
     if (!file) return false;
     if (integrationBridgeRef.current && !fromIntegration) {
-      showImportNotice('Le média lié à ' + integrationBridgeRef.current.providerLabel + ' ne peut pas être remplacé dans cette session');
+      showImportNotice(t('The media linked to ', 'Le média lié à ') + integrationBridgeRef.current.providerLabel + t(' cannot be replaced in this session', ' ne peut pas être remplacé dans cette session'));
       return false;
     }
     const extension = file.name.split('.').pop()?.toLowerCase();
@@ -1978,7 +2039,7 @@ export default function Home() {
       : {
           version: 1,
           kind: 'video',
-          title: file.name.replace(/\.[^.]+$/, '') || 'Corrections vidéo',
+          title: file.name.replace(/\.[^.]+$/, '') || t('Video corrections', 'Corrections vidéo'),
           videoName: file.name,
           videoType: file.type || 'video/mp4',
           duration: 0,
@@ -2005,7 +2066,7 @@ export default function Home() {
     setActiveTabId(id);
     setSelectedId(null);
     setTool('select');
-    showImportNotice(replaceBlank ? 'Vidéo ouverte dans le premier onglet' : 'Vidéo ouverte dans un nouvel onglet');
+    showImportNotice(replaceBlank ? t('Video opened in the first tab', 'Vidéo ouverte dans le premier onglet') : t('Video opened in a new tab', 'Vidéo ouverte dans un nouvel onglet'));
     return true;
   }
 
@@ -2021,19 +2082,19 @@ export default function Home() {
 
   async function openVideoFrameAsImage(file: File, time: number, videoTitle: string) {
     const dataUrl = await readAsDataUrl(file);
-    const project = createBlankProject();
-    project.title = file.name.replace(/\.[^.]+$/, '') || 'Capture vidéo';
+    const project = createBlankProject(locale);
+    project.title = file.name.replace(/\.[^.]+$/, '') || t('Video capture', 'Capture vidéo');
     project.globalInstructions =
-      'Capture extraite de la vidéo « ' + videoTitle + ' » au timecode ' +
+      t('Capture extracted from video “', 'Capture extraite de la vidéo « ') + videoTitle + t('” at timecode ', ' » au timecode ') +
       formatVideoTime(time) + '.';
     project.image = { src: dataUrl, name: file.name };
     createTab(project, file.name);
-    showImportNotice('Capture vidéo ouverte dans un onglet image');
+    showImportNotice(t('Video capture opened in an image tab', 'Capture vidéo ouverte dans un onglet image'));
   }
 
   async function loadImageFile(file?: File, source: 'file' | 'clipboard' = 'file') {
     if (integrationBridgeRef.current) {
-      showImportNotice('Le média lié à ' + integrationBridgeRef.current.providerLabel + ' ne peut pas être remplacé dans cette session');
+      showImportNotice(t('The media linked to ', 'Le média lié à ') + integrationBridgeRef.current.providerLabel + t(' cannot be replaced in this session', ' ne peut pas être remplacé dans cette session'));
       return false;
     }
     if (!file || !file.type.startsWith('image/')) return false;
@@ -2043,7 +2104,7 @@ export default function Home() {
       (source === 'clipboard'
         ? 'capture-collee-' + new Date().toISOString().replace(/[:.]/g, '-') + '.png'
         : 'capture-importee.png');
-    const project = createBlankProject();
+    const project = createBlankProject(locale);
     project.title = nextImageName.replace(/\.[^.]+$/, '') || 'Corrections interface';
     project.image = { src: dataUrl, name: nextImageName };
 
@@ -2057,11 +2118,11 @@ export default function Home() {
     showImportNotice(
       source === 'clipboard'
         ? openedInNewTab
-          ? 'Image collée dans un nouvel onglet'
-          : 'Image collée depuis le presse-papiers'
+          ? t('Image pasted into a new tab', 'Image collée dans un nouvel onglet')
+          : t('Image pasted from the clipboard', 'Image collée depuis le presse-papiers')
         : openedInNewTab
           ? 'Image ouverte dans un nouvel onglet'
-          : 'Image importée par glisser-déposer',
+          : t('Image imported by drag and drop', 'Image importée par glisser-déposer'),
     );
     return true;
   }
@@ -2069,7 +2130,7 @@ export default function Home() {
   async function pasteImageFromClipboard() {
     try {
       if (!navigator.clipboard || !('read' in navigator.clipboard)) {
-        showImportNotice('Utilise Ctrl+V pour coller l’image');
+        showImportNotice(t('Use Ctrl+V to paste the image', 'Utilise Ctrl+V pour coller l’image'));
         return;
       }
       const clipboardItems = await navigator.clipboard.read();
@@ -2086,9 +2147,9 @@ export default function Home() {
         await loadImageFile(file, 'clipboard');
         return;
       }
-      showImportNotice('Le presse-papiers ne contient pas d’image');
+      showImportNotice(t('The clipboard does not contain an image', 'Le presse-papiers ne contient pas d’image'));
     } catch {
-      showImportNotice('Autorise le presse-papiers ou utilise Ctrl+V');
+      showImportNotice(t('Allow clipboard access or use Ctrl+V', 'Autorise le presse-papiers ou utilise Ctrl+V'));
     }
   }
 
@@ -2105,13 +2166,13 @@ export default function Home() {
       event.preventDefault();
       if (pasteAsReference && selectedId) {
         addReferences(imageFiles, selectedId).catch(() =>
-          showImportNotice('Impossible de coller cette référence'),
+          showImportNotice(t('Unable to paste this reference', 'Impossible de coller cette référence')),
         );
         return;
       }
 
       loadImageFile(imageFiles[0], 'clipboard').catch(() =>
-        showImportNotice('Impossible de coller cette image'),
+        showImportNotice(t('Unable to paste this image', 'Impossible de coller cette image')),
       );
     }
     window.addEventListener('paste', handlePaste);
@@ -2160,10 +2221,10 @@ export default function Home() {
     }
     const imageFile = files.find((file) => file.type.startsWith('image/'));
     if (!imageFile) {
-      showImportNotice('Dépose une image PNG, JPG, WebP ou une vidéo MP4/WebM');
+      showImportNotice(t('Drop a PNG, JPG, WebP image or an MP4/WebM video', 'Dépose une image PNG, JPG, WebP ou une vidéo MP4/WebM'));
       return;
     }
-    loadImageFile(imageFile).catch(() => showImportNotice('Impossible d’importer cette image'));
+    loadImageFile(imageFile).catch(() => showImportNotice(t('Unable to import this image', 'Impossible d’importer cette image')));
   }
 
   function addLayer() {
@@ -2197,7 +2258,7 @@ export default function Home() {
     if (!annotationId || !files?.length) return;
     const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'));
     if (!imageFiles.length) {
-      showImportNotice('Ajoute uniquement des images PNG, JPG ou WebP');
+      showImportNotice(t('Add only PNG, JPG, or WebP images', 'Ajoute uniquement des images PNG, JPG ou WebP'));
       return;
     }
     const newReferences = await Promise.all(
@@ -2213,8 +2274,7 @@ export default function Home() {
       references: [...annotation.references, ...newReferences],
     });
     showImportNotice(
-      newReferences.length + ' image' + (newReferences.length > 1 ? 's' : '') + ' ajoutée' +
-        (newReferences.length > 1 ? 's' : '') + ' en référence',
+      newReferences.length + (newReferences.length > 1 ? t(' images added as references', ' images ajoutées en référence') : t(' image added as reference', ' image ajoutée en référence')),
     );
   }
 
@@ -2247,7 +2307,7 @@ export default function Home() {
     const targetId = selectedId;
     if (!targetId) return;
     addReferences(Array.from(event.dataTransfer.files), targetId).catch(() =>
-      showImportNotice('Impossible d’ajouter cette référence'),
+      showImportNotice(t('Unable to add this reference', 'Impossible d’ajouter cette référence')),
     );
   }
 
@@ -2268,7 +2328,7 @@ export default function Home() {
 
   async function openProjectFile(file?: File) {
     if (integrationBridgeRef.current) {
-      showImportNotice('Cette fenêtre est liée à un média ' + integrationBridgeRef.current.providerLabel);
+      showImportNotice(t('This window is linked to media from ', 'Cette fenêtre est liée à un média ') + integrationBridgeRef.current.providerLabel);
       return;
     }
     if (!file) return;
@@ -2288,12 +2348,14 @@ export default function Home() {
             | { id: string; label: string; kind: 'video'; project: VideoProjectData; sourcePath?: string };
           const workspace = JSON.parse(await workspaceEntry.async('string')) as {
             workspaceVersion: number;
+            locale?: unknown;
             activeTabId: string;
             tabs: StoredTab[];
           };
           if (![1, 2].includes(workspace.workspaceVersion) || !Array.isArray(workspace.tabs)) {
             throw new Error('Espace de travail invalide');
           }
+          if (isAppLocale(workspace.locale)) changeLocale(workspace.locale);
 
           const restoredTabs: BoardTab[] = [];
           for (const storedTab of workspace.tabs) {
@@ -2420,7 +2482,7 @@ export default function Home() {
           : 'Projet CyAnnota ouvert',
       );
     } catch {
-      window.alert('Ce fichier ne contient pas de projet CyAnnota modifiable.');
+      window.alert(t('This file does not contain an editable CyAnnota project.', 'Ce fichier ne contient pas de projet CyAnnota modifiable.'));
     }
   }
 
@@ -2431,47 +2493,49 @@ export default function Home() {
     else applyProject(project);
   }
 
-  function locationText(annotation: Annotation) {
+  function locationText(annotation: Annotation, promptLocale: AppLocale = locale) {
+    const pt = (english: string, french: string) => translate(promptLocale, english, french);
     if (annotation.type === 'arrow') {
-      return 'de (' + Math.round(annotation.x1) + ', ' + Math.round(annotation.y1) + ') vers (' + Math.round(annotation.x2) + ', ' + Math.round(annotation.y2) + ')';
+      return pt('from (', 'de (') + Math.round(annotation.x1) + ', ' + Math.round(annotation.y1) + pt(') to (', ') vers (') + Math.round(annotation.x2) + ', ' + Math.round(annotation.y2) + ')';
     }
     if (annotation.type === 'text') {
-      return 'au point (' + Math.round(annotation.x) + ', ' + Math.round(annotation.y) + ')';
+      return pt('at point (', 'au point (') + Math.round(annotation.x) + ', ' + Math.round(annotation.y) + ')';
     }
     if (annotation.type === 'draw') {
       const bounds = annotationBounds(annotation);
-      return 'zone x=' + Math.round(bounds.x) + ', y=' + Math.round(bounds.y) + ', largeur=' + Math.round(bounds.w) + ', hauteur=' + Math.round(bounds.h);
+      return pt('area x=', 'zone x=') + Math.round(bounds.x) + ', y=' + Math.round(bounds.y) + pt(', width=', ', largeur=') + Math.round(bounds.w) + pt(', height=', ', hauteur=') + Math.round(bounds.h);
     }
     if (annotation.type === 'cut') {
       const dx = Math.round(annotation.x - annotation.sourceX);
       const dy = Math.round(annotation.y - annotation.sourceY);
-      return 'source x=' + Math.round(annotation.sourceX) + ', y=' + Math.round(annotation.sourceY) + ', ' + Math.round(annotation.w) + '×' + Math.round(annotation.h) + ' px ; destination x=' + Math.round(annotation.x) + ', y=' + Math.round(annotation.y) + ' ; déplacement Δx=' + dx + ', Δy=' + dy;
+      return 'source x=' + Math.round(annotation.sourceX) + ', y=' + Math.round(annotation.sourceY) + ', ' + Math.round(annotation.w) + '×' + Math.round(annotation.h) + pt(' px; destination x=', ' px ; destination x=') + Math.round(annotation.x) + ', y=' + Math.round(annotation.y) + pt('; move Δx=', ' ; déplacement Δx=') + dx + ', Δy=' + dy;
     }
     const bounds = annotationBounds(annotation);
-    return 'x=' + Math.round(bounds.x) + ', y=' + Math.round(bounds.y) + ', largeur=' + Math.round(bounds.w) + ', hauteur=' + Math.round(bounds.h);
+    return 'x=' + Math.round(bounds.x) + ', y=' + Math.round(bounds.y) + pt(', width=', ', largeur=') + Math.round(bounds.w) + pt(', height=', ', hauteur=') + Math.round(bounds.h);
   }
 
-  function buildPrompt(project: ProjectFile = projectData()) {
+  function buildPrompt(project: ProjectFile = projectData(), promptLocale: AppLocale = locale) {
+    const pt = (english: string, french: string) => translate(promptLocale, english, french);
     const sourceAnnotations = project.annotations;
     const sourceLayers = project.layers;
     const sourceImageName = project.image?.name || 'image.png';
     const lines = [
-      '# Brief de corrections — ' + project.title,
+      pt('# Interface correction brief — ', '# Brief de corrections — ') + project.title,
       '',
-      'Modifie l’interface à partir de « images/original-' + safeFileName(sourceImageName) + ' » en suivant « images/annotated.png » et les corrections numérotées ci-dessous.',
+      pt('Modify the interface using “images/original-', 'Modifie l’interface à partir de « images/original-') + safeFileName(sourceImageName) + pt('”, following “images/annotated.png” and the numbered corrections below.', ' » en suivant « images/annotated.png » et les corrections numérotées ci-dessous.'),
       '',
-      '## Intention générale',
+      pt('## General intent', '## Intention générale'),
       '',
-      project.globalInstructions.trim() || 'Aucune instruction générale supplémentaire.',
+      project.globalInstructions.trim() || pt('No additional general instruction.', 'Aucune instruction générale supplémentaire.'),
       '',
-      '## Règles',
+      pt('## Rules', '## Règles'),
       '',
-      '- Respecter l’ordre et la numérotation des annotations.',
-      '- Les éléments liés au même cadre constituent une seule correction structurée.',
-      '- Les zones rouges marquées SUPPRIMER doivent être retirées sans instruction supplémentaire.',
-      '- Pour une annotation de couleur, remplacer la couleur prélevée par la couleur souhaitée.',
-      '- Conserver tous les éléments qui ne sont pas explicitement concernés.',
-      '- Utiliser les images de référence uniquement pour la correction à laquelle elles sont jointes.',
+      pt('- Follow the order and numbering of annotations.', '- Respecter l’ordre et la numérotation des annotations.'),
+      pt('- Items linked to the same frame form one structured correction.', '- Les éléments liés au même cadre constituent une seule correction structurée.'),
+      pt('- Red areas marked DELETE must be removed without any additional instruction.', '- Les zones rouges marquées SUPPRIMER doivent être retirées sans instruction supplémentaire.'),
+      pt('- For a color annotation, replace the sampled color with the requested color.', '- Pour une annotation de couleur, remplacer la couleur prélevée par la couleur souhaitée.'),
+      pt('- Preserve every item that is not explicitly affected.', '- Conserver tous les éléments qui ne sont pas explicitement concernés.'),
+      pt('- Use reference images only for the correction to which they are attached.', '- Utiliser les images de référence uniquement pour la correction à laquelle elles sont jointes.'),
       '',
       '## Corrections',
       '',
@@ -2482,32 +2546,32 @@ export default function Home() {
       const groupIndex = annotation.groupId
         ? sourceAnnotations.findIndex((item) => item.id === annotation.groupId)
         : -1;
-      lines.push('### ' + String(index + 1).padStart(2, '0') + ' — ' + CATEGORY_LABELS[annotation.category]);
+      lines.push('### ' + String(index + 1).padStart(2, '0') + ' — ' + CATEGORY_LABELS[promptLocale][annotation.category]);
       lines.push('');
-      lines.push('- Type : ' + TYPE_LABELS[annotation.type]);
-      lines.push('- Calque : ' + (layer?.name || 'Sans calque'));
+      lines.push(pt('- Type: ', '- Type : ') + TYPE_LABELS[promptLocale][annotation.type]);
+      lines.push(pt('- Layer: ', '- Calque : ') + (layer?.name || pt('No layer', 'Sans calque')));
       if (groupIndex >= 0) {
-        lines.push('- Appartient au cadre : ' + String(groupIndex + 1).padStart(2, '0'));
+        lines.push(pt('- Belongs to frame: ', '- Appartient au cadre : ') + String(groupIndex + 1).padStart(2, '0'));
       }
-      lines.push('- Position : ' + locationText(annotation));
-      lines.push('- Instruction : ' + (annotation.description.trim() || 'Instruction à préciser.'));
+      lines.push(pt('- Position: ', '- Position : ') + locationText(annotation, promptLocale));
+      lines.push(pt('- Instruction: ', '- Instruction : ') + (annotation.description.trim() || pt('Instruction to specify.', 'Instruction à préciser.')));
 
       if (annotation.type === 'frame') {
         const children = sourceAnnotations
           .map((item, childIndex) => ({ item, childIndex }))
           .filter(({ item }) => item.groupId === annotation.id)
           .map(({ childIndex }) => String(childIndex + 1).padStart(2, '0'));
-        lines.push('- Éléments du cadre : ' + (children.join(', ') || 'aucun'));
+        lines.push(pt('- Frame items: ', '- Éléments du cadre : ') + (children.join(', ') || pt('none', 'aucun')));
       }
       if (annotation.type === 'shape') {
-        lines.push('- Forme : ' + annotation.shape + ' ; remplissage : ' + annotation.fillColor);
+        lines.push(pt('- Shape: ', '- Forme : ') + annotation.shape + pt('; fill: ', ' ; remplissage : ') + annotation.fillColor);
       }
       if (annotation.type === 'delete') {
-        lines.push('- Action automatique : supprimer tout le contenu de cette zone.');
+        lines.push(pt('- Automatic action: delete all content inside this area.', '- Action automatique : supprimer tout le contenu de cette zone.'));
       }
       if (annotation.type === 'color') {
         lines.push(
-          '- Couleur : ' +
+          pt('- Color: ', '- Couleur : ') +
             annotation.sampledColor.toUpperCase() +
             ' → ' +
             annotation.replacementColor.toUpperCase(),
@@ -2515,7 +2579,7 @@ export default function Home() {
       }
       if (annotation.references.length) {
         lines.push(
-          '- Références : ' +
+          pt('- References: ', '- Références : ') +
             annotation.references
               .map((reference) => '« references/' + String(index + 1).padStart(2, '0') + '-' + safeFileName(reference.name) + ' »')
               .join(', '),
@@ -2523,20 +2587,20 @@ export default function Home() {
       }
       if (annotation.type === 'cut') {
         lines.push(
-          '- Découpe : « decoupes/' +
+          pt('- Cutout: “decoupes/', '- Découpe : « decoupes/') +
             String(index + 1).padStart(2, '0') +
-            '-element.png »' +
-            (annotation.polygon?.length ? ' ; contour polygonal.' : '.'),
+            pt('-element.png”', '-element.png »') +
+            (annotation.polygon?.length ? pt('; polygon outline.', ' ; contour polygonal.') : '.'),
         );
       }
       lines.push('');
     });
 
-    if (!sourceAnnotations.length) lines.push('Aucune correction annotée.');
+    if (!sourceAnnotations.length) lines.push(pt('No correction was annotated.', 'Aucune correction annotée.'));
     lines.push(
-      '## Critère de fin',
+      pt('## Completion criteria', '## Critère de fin'),
       '',
-      'Le résultat final doit intégrer toutes les corrections visibles sans modifier le reste de l’interface.',
+      pt('The final result must include every visible correction without changing the rest of the interface.', 'Le résultat final doit intégrer toutes les corrections visibles sans modifier le reste de l’interface.'),
     );
     return lines.join('\n');
   }
@@ -2544,8 +2608,8 @@ export default function Home() {
   function openExport() {
     setExportPrompt(
       activeTab?.kind === 'video'
-        ? buildVideoPrompt(createVideoDeliveryProject(activeTab.project, includeOriginalVideosInExport))
-        : buildPrompt(),
+        ? buildVideoPrompt(createVideoDeliveryProject(activeTab.project, includeOriginalVideosInExport), locale)
+        : buildPrompt(projectData(), locale),
     );
     setExportOpen(true);
   }
@@ -2676,7 +2740,7 @@ export default function Home() {
     ].join(':');
     const cached = encodedVideoCacheRef.current.get(tab.id);
     if (cached?.signature === signature) {
-      setExportProgressLabel('Vidéo ' + (index + 1) + '/' + total + ' · découpe déjà encodée');
+      setExportProgressLabel(t('Video ', 'Vidéo ') + (index + 1) + '/' + total + t(' · cut already encoded', ' · découpe déjà encodée'));
       return cached.blob;
     }
     const prefix = 'Vidéo ' + (index + 1) + '/' + total + ' · ';
@@ -2840,7 +2904,7 @@ export default function Home() {
       safeFileName(packageTitle || 'cyannota') +
       (options.container === 'project' ? '.cyannota' : '.cyannota.zip');
     const exportFolder = (tab: BoardTab, index: number) =>
-      'onglets/' +
+      t('tabs/', 'onglets/') +
       String(index + 1).padStart(2, '0') +
       '-' +
       safeFileName(tab.label) +
@@ -2859,11 +2923,11 @@ export default function Home() {
     });
 
     setIsExporting(true);
-    setExportProgressLabel('Préparation du paquet…');
+    setExportProgressLabel(t('Preparing package…', 'Préparation du paquet…'));
     try {
       const preparedSave = await prepareFileSave(packageName);
       if (!preparedSave) {
-        setSaveStatus('Enregistrement annulé');
+        setSaveStatus(t('Save cancelled', 'Enregistrement annulé'));
         return false;
       }
 
@@ -2888,6 +2952,7 @@ export default function Home() {
         JSON.stringify(
           {
             workspaceVersion: 2,
+            locale,
             activeTabId,
             tabs: storedTabs,
           },
@@ -2921,6 +2986,7 @@ export default function Home() {
             updatedAt: new Date().toISOString(),
             container: options.container,
             audience: options.includePrompt ? 'ai' : 'human',
+            locale,
             workspace: 'workspace.cyannota.json',
             thumbnail: 'thumbnail.png',
             activeTabId,
@@ -2935,18 +3001,18 @@ export default function Home() {
         ),
       );
       zip.file(
-        'LISEZ-MOI.txt',
-        (options.container === 'project' ? 'Projet' : 'Archive') +
-          ' CyAnnota contenant ' +
+        t('README.txt', 'LISEZ-MOI.txt'),
+        (options.container === 'project' ? t('CyAnnota project', 'Projet CyAnnota') : t('CyAnnota archive', 'Archive CyAnnota')) +
+          t(' containing ', ' contenant ') +
           exportableTabs.length +
-          ' onglet(s) image/vidéo. ' +
+          t(' image/video tab(s). ', ' onglet(s) image/vidéo. ') +
           (options.includePrompt
-            ? 'Mode IA : les prompts de correction sont inclus. '
-            : 'Mode Humain : aucun prompt n’est inclus. ') +
+            ? t('AI mode: correction prompts are included. ', 'Mode IA : les prompts de correction sont inclus. ')
+            : t('Human mode: no prompt is included. ', 'Mode Humain : aucun prompt n’est inclus. ')) +
           (isDeliveryExport
-            ? 'Les vidéos sont découpées et réencodées. Les sources originales sont ' + (includeOriginalVideos ? 'également incluses.' : 'omises pour alléger le paquet.')
-            : 'La sauvegarde contient les vidéos sources ainsi que leurs versions découpées et réencodées.') +
-          ' Ouvrez directement ce fichier dans CyAnnota pour restaurer l’espace de travail.',
+            ? t('Videos are trimmed and re-encoded. Original sources are ', 'Les vidéos sont découpées et réencodées. Les sources originales sont ') + (includeOriginalVideos ? t('also included.', 'également incluses.') : t('omitted to keep the package lightweight.', 'omises pour alléger le paquet.'))
+            : t('The save contains source videos and their trimmed, re-encoded versions.', 'La sauvegarde contient les vidéos sources ainsi que leurs versions découpées et réencodées.')) +
+          t(' Open this file directly in CyAnnota to restore the workspace.', ' Ouvrez directement ce fichier dans CyAnnota pour restaurer l’espace de travail.'),
       );
 
       let videoIndex = 0;
@@ -2959,7 +3025,7 @@ export default function Home() {
             const packagedProject = packagedVideoProjects.get(tab.id);
             if (!packagedProject) throw new Error('Projet vidéo préparé introuvable.');
             const generatedPrompt = options.includePrompt
-              ? buildVideoPrompt(packagedProject)
+              ? buildVideoPrompt(packagedProject, locale)
               : undefined;
             const prompt =
               options.includePrompt && options.delivery && tab.id === activeTabId && exportPrompt
@@ -2978,7 +3044,7 @@ export default function Home() {
             );
           } else {
             const generatedPrompt = options.includePrompt
-              ? buildPrompt(tab.project)
+              ? buildPrompt(tab.project, locale)
               : undefined;
             const prompt =
               options.includePrompt && options.delivery && tab.id === activeTabId && exportPrompt
@@ -2988,11 +3054,11 @@ export default function Home() {
           }
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
-          throw new Error('Onglet « ' + tab.label + ' » : ' + detail);
+          throw new Error(t('Tab “', 'Onglet « ') + tab.label + t('”: ', ' » : ') + detail);
         }
       }
-      const containerLabel = options.container === 'project' ? 'projet CyAnnota' : 'ZIP';
-      setExportProgressLabel('Compression du ' + containerLabel + '…');
+      const containerLabel = options.container === 'project' ? t('CyAnnota project', 'projet CyAnnota') : 'ZIP';
+      setExportProgressLabel(t('Compressing ', 'Compression du ') + containerLabel + '…');
       const archive = await zip.generateAsync(
         {
           type: 'blob',
@@ -3000,24 +3066,24 @@ export default function Home() {
           compression: 'DEFLATE',
           compressionOptions: { level: 6 },
         },
-        (metadata) => setExportProgressLabel('Compression du ' + containerLabel + ' · ' + Math.round(metadata.percent) + '%'),
+        (metadata) => setExportProgressLabel(t('Compressing ', 'Compression du ') + containerLabel + ' · ' + Math.round(metadata.percent) + '%'),
       );
       const saved = await savePreparedBlob(archive, preparedSave);
       setSaveStatus(
         saved
           ? options.delivery
-            ? 'Export ' + (options.includePrompt ? 'IA' : 'Humain') + ' enregistré'
-            : 'Projet CyAnnota enregistré avec les sources'
-          : 'Enregistrement annulé',
+            ? t('Export ', 'Export ') + (options.includePrompt ? t('AI', 'IA') : t('Human', 'Humain')) + t(' saved', ' enregistré')
+            : t('CyAnnota project saved with sources', 'Projet CyAnnota enregistré avec les sources')
+          : t('Save cancelled', 'Enregistrement annulé'),
       );
-      setExportProgressLabel(saved ? 'Paquet enregistré' : 'Enregistrement annulé');
+      setExportProgressLabel(saved ? t('Package saved', 'Paquet enregistré') : t('Save cancelled', 'Enregistrement annulé'));
       return saved;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'erreur inconnue';
-      setSaveStatus('Échec de l’enregistrement CyAnnota');
-      setExportProgressLabel('Encodage ou export impossible');
-      showImportNotice('Enregistrement impossible : ' + message);
-      await showSaveFailure('Impossible d’enregistrer le fichier CyAnnota.', error);
+      const message = error instanceof Error ? error.message : t('unknown error', 'erreur inconnue');
+      setSaveStatus(t('CyAnnota save failed', 'Échec de l’enregistrement CyAnnota'));
+      setExportProgressLabel(t('Encoding or export failed', 'Encodage ou export impossible'));
+      showImportNotice(t('Save failed: ', 'Enregistrement impossible : ') + message);
+      await showSaveFailure(t('Unable to save the CyAnnota file.', 'Impossible d’enregistrer le fichier CyAnnota.'), error);
       throw error;
     } finally {
       setIsExporting(false);
@@ -3052,30 +3118,30 @@ export default function Home() {
         <section className="export-modal" onMouseDown={(event) => event.stopPropagation()}>
           <header className="modal-header">
             <div>
-              <p className="eyebrow">PAQUET DE CORRECTIONS COMPLET</p>
-              <h2>{exportAudience === 'human' ? 'Dossier prêt pour une personne' : 'Images et vidéos prêtes pour une IA'}</h2>
-              <p>{exportAudience === 'human' ? 'Le paquet contient les médias, les annotations et la miniature, sans aucun prompt.' : 'Le paquet contient aussi les prompts structurés pour transmettre les corrections à une IA.'}</p>
+              <p className="eyebrow">{t('COMPLETE CORRECTION PACKAGE', 'PAQUET DE CORRECTIONS COMPLET')}</p>
+              <h2>{exportAudience === 'human' ? t('Package ready for a person', 'Dossier prêt pour une personne') : t('Images and videos ready for AI', 'Images et vidéos prêtes pour une IA')}</h2>
+              <p>{exportAudience === 'human' ? t('The package contains media, annotations, and thumbnails, with no prompt.', 'Le paquet contient les médias, les annotations et la miniature, sans aucun prompt.') : t('The package also contains structured prompts for sending corrections to an AI.', 'Le paquet contient aussi les prompts structurés pour transmettre les corrections à une IA.')}</p>
             </div>
-            <button className="modal-close" aria-label="Fermer" onClick={() => setExportOpen(false)}>×</button>
+            <button className="modal-close" aria-label={t('Close', 'Fermer')} onClick={() => setExportOpen(false)}>×</button>
           </header>
 
           <div className="export-stats">
-            <div><strong>{tabs.length}</strong><span>onglets</span></div>
-            <div><strong>{correctionCount}</strong><span>corrections</span></div>
-            <div><strong>{videoCount}</strong><span>vidéos</span></div>
-            <div><strong>{frameStopCount}</strong><span>arrêts image</span></div>
+            <div><strong>{tabs.length}</strong><span>{t('tabs', 'onglets')}</span></div>
+            <div><strong>{correctionCount}</strong><span>{t('corrections', 'corrections')}</span></div>
+            <div><strong>{videoCount}</strong><span>{t('videos', 'vidéos')}</span></div>
+            <div><strong>{frameStopCount}</strong><span>{t('frame stops', 'arrêts image')}</span></div>
           </div>
 
-          <div className="export-mode-grid" aria-label="Options d’export">
+          <div className="export-mode-grid" aria-label={t('Export options', 'Options d’export')}>
             <fieldset className="export-choice-group">
-              <legend>Destinataire</legend>
+              <legend>{t('Recipient', 'Destinataire')}</legend>
               <button
                 type="button"
                 className={exportAudience === 'human' ? 'export-choice active' : 'export-choice'}
                 onClick={() => setExportAudience('human')}
                 disabled={isExporting}
               >
-                <strong>Humain</strong><small>Médias et annotations, sans prompt</small>
+                <strong>{t('Human', 'Humain')}</strong><small>{t('Media and annotations, without a prompt', 'Médias et annotations, sans prompt')}</small>
               </button>
               <button
                 type="button"
@@ -3083,18 +3149,18 @@ export default function Home() {
                 onClick={() => setExportAudience('ai')}
                 disabled={isExporting}
               >
-                <strong>IA</strong><small>Ajoute les prompts structurés</small>
+                <strong>{t('AI', 'IA')}</strong><small>{t('Adds structured prompts', 'Ajoute les prompts structurés')}</small>
               </button>
             </fieldset>
             <fieldset className="export-choice-group">
-              <legend>Format</legend>
+              <legend>{t('Format', 'Format')}</legend>
               <button
                 type="button"
                 className={exportContainer === 'project' ? 'export-choice active' : 'export-choice'}
                 onClick={() => setExportContainer('project')}
                 disabled={isExporting}
               >
-                <strong>Projet .cyannota</strong><small>Reconnu par CyTask et le bureau</small>
+                <strong>{t('.cyannota project', 'Projet .cyannota')}</strong><small>{t('Recognized by CyTask and the desktop app', 'Reconnu par CyTask et le bureau')}</small>
               </button>
               <button
                 type="button"
@@ -3102,14 +3168,14 @@ export default function Home() {
                 onClick={() => setExportContainer('zip')}
                 disabled={isExporting}
               >
-                <strong>Archive ZIP</strong><small>Compatible avec le flux actuel</small>
+                <strong>{t('ZIP archive', 'Archive ZIP')}</strong><small>{t('Compatible with the current workflow', 'Compatible avec le flux actuel')}</small>
               </button>
             </fieldset>
           </div>
 
           {exportAudience === 'ai' && (
             <label className="prompt-editor">
-              <span>Prompt de l’onglet actif — tu peux encore le modifier</span>
+              <span>{t('Active tab prompt — you can still edit it', 'Prompt de l’onglet actif — tu peux encore le modifier')}</span>
               <textarea value={exportPrompt} onChange={(event) => setExportPrompt(event.target.value)} />
             </label>
           )}
@@ -3125,26 +3191,26 @@ export default function Home() {
                   setIncludeOriginalVideosInExport(checked);
                   if (activeTab?.kind === 'video') {
                     const replacement = checked
-                      ? '- La vidéo source originale est également jointe comme donnée de référence.'
-                      : '- La vidéo source originale n’est pas incluse dans ce paquet léger.';
+                      ? t('- The original source video is also included as reference data.', '- La vidéo source originale est également jointe comme donnée de référence.')
+                      : t('- The original source video is not included in this lightweight package.', '- La vidéo source originale n’est pas incluse dans ce paquet léger.');
                     setExportPrompt((current) => current.replace(
-                      /^- La vidéo source originale .*$/m,
+                      /^- (?:The original source video|La vidéo source originale).*$/m,
                       replacement,
                     ));
                   }
                 }}
               />
-              <span><strong>Inclure aussi les vidéos originales</strong><small>Plus lourd, mais utile si le destinataire doit retrouver toute la capture source.</small></span>
+              <span><strong>{t('Also include original videos', 'Inclure aussi les vidéos originales')}</strong><small>{t('Larger, but useful when the recipient needs the complete source capture.', 'Plus lourd, mais utile si le destinataire doit retrouver toute la capture source.')}</small></span>
             </label>
           )}
-          {isExporting && <div className="export-encoding-status"><span className="status-dot" /><strong>{exportProgressLabel || 'Encodage local en cours…'}</strong></div>}
+            {isExporting && <div className="export-encoding-status"><span className="status-dot" /><strong>{exportProgressLabel || t('Local encoding in progress…', 'Encodage local en cours…')}</strong></div>}
 
           <footer className="modal-actions">
             {exportAudience === 'ai' && (
-              <button className="button ghost" onClick={() => copyPrompt().catch(() => undefined)}>Copier le prompt</button>
+              <button className="button ghost" onClick={() => copyPrompt().catch(() => undefined)}>{t('Copy prompt', 'Copier le prompt')}</button>
             )}
             {activeTab?.kind === 'image' && activeTab.project.image && (
-              <button className="button ghost" onClick={() => downloadAnnotatedImage().catch(() => undefined)}>Image annotée</button>
+              <button className="button ghost" onClick={() => downloadAnnotatedImage().catch(() => undefined)}>{t('Annotated image', 'Image annotée')}</button>
             )}
             <button
               className="button primary large"
@@ -3156,8 +3222,8 @@ export default function Home() {
               disabled={isExporting}
             >
               {isExporting
-                ? 'Encodage et création en cours…'
-                : 'Exporter · ' + (exportAudience === 'human' ? 'Humain' : 'IA') + ' · ' + (exportContainer === 'project' ? '.cyannota' : 'ZIP')}
+                ? t('Encoding and creating…', 'Encodage et création en cours…')
+                : t('Export', 'Exporter') + ' · ' + (exportAudience === 'human' ? t('Human', 'Humain') : t('AI', 'IA')) + ' · ' + (exportContainer === 'project' ? '.cyannota' : 'ZIP')}
             </button>
           </footer>
         </section>
@@ -3182,7 +3248,7 @@ export default function Home() {
 
   function renderMediaTabs() {
     return (
-      <div className="board-tabs" role="tablist" aria-label="Médias ouverts">
+      <div className="board-tabs" role="tablist" aria-label={t('Open media', 'Médias ouverts')}>
         <div className="board-tabs-scroll">
           {tabs.map((tab, index) => (
             <div
@@ -3208,7 +3274,7 @@ export default function Home() {
               </button>
               <button
                 className="board-tab-close"
-                aria-label={'Fermer ' + tab.label}
+                aria-label={t('Close ', 'Fermer ') + tab.label}
                 onClick={() => closeTab(tab.id)}
               >
                 ×
@@ -3219,8 +3285,8 @@ export default function Home() {
         {!integrationBridge && (
           <button
             className="new-board-tab"
-            aria-label="Nouvel onglet d’image"
-            title="Nouvel onglet d’image"
+            aria-label={t('New image tab', 'Nouvel onglet d’image')}
+            title={t('New image tab', 'Nouvel onglet d’image')}
             onClick={() => createTab()}
           >
             +
@@ -3253,6 +3319,8 @@ export default function Home() {
             else saveProjectFile().catch(() => undefined);
           }}
           onExportWorkspace={openExport}
+          locale={locale}
+          onLocaleChange={changeLocale}
         />
         <input
           ref={projectInputRef}
@@ -3293,26 +3361,34 @@ export default function Home() {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark">Cy</span>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img className="brand-mark" src="/cyannota-logo.png" alt="" />
           <div>
             <strong>CyAnnota</strong>
-            <span>Corrections d’interface</span>
+            <span>{t('Interface corrections', 'Corrections d’interface')}</span>
           </div>
         </div>
 
         <label className="project-title">
           <span className="status-dot" />
           <input
-            aria-label="Nom du projet"
+            aria-label={t('Project name', 'Nom du projet')}
             value={projectTitle}
             onChange={(event) => setProjectTitle(event.target.value)}
           />
         </label>
 
         <div className="top-actions">
+          <label className="language-picker" title={t('Interface and prompt language', 'Langue de l’interface et des prompts')}>
+            <span>{locale.toUpperCase()}</span>
+            <select value={locale} onChange={(event) => changeLocale(event.target.value as AppLocale)} aria-label={t('Language', 'Langue')}>
+              <option value="en">English</option>
+              <option value="fr">Français</option>
+            </select>
+          </label>
           {hasLocalDraft && !imageSource && (
             <button className="button ghost compact" onClick={() => resumeDraft().catch(() => undefined)}>
-              Reprendre
+              {t('Resume', 'Reprendre')}
             </button>
           )}
           {integrationBridge && (
@@ -3323,10 +3399,10 @@ export default function Home() {
           {!integrationBridge && (
             <>
               <button className="button ghost compact" onClick={() => projectInputRef.current?.click()}>
-                Ouvrir
+                {t('Open', 'Ouvrir')}
               </button>
               <button className="button ghost compact" onClick={() => videoInputRef.current?.click()}>
-                Vidéo
+                {t('Video', 'Vidéo')}
               </button>
             </>
           )}
@@ -3335,10 +3411,10 @@ export default function Home() {
             onClick={() => saveProjectFile().catch(() => undefined)}
             disabled={!hasExportableMedia || isExporting}
           >
-            {integrationBridge ? 'Sauver dans ' + integrationBridge.providerLabel : 'Sauver'}
+            {integrationBridge ? t('Save to ', 'Sauver dans ') + integrationBridge.providerLabel : t('Save', 'Sauver')}
           </button>
           <button className="button primary" onClick={openExport} disabled={!hasExportableMedia}>
-            Exporter
+            {t('Export', 'Exporter')}
           </button>
         </div>
 
@@ -3365,13 +3441,13 @@ export default function Home() {
       </header>
 
       <section className="workspace">
-        <aside className="toolrail" aria-label="Outils d’annotation">
+        <aside className="toolrail" aria-label={t('Annotation tools', 'Outils d’annotation')}>
           {(Object.keys(toolIcons) as Tool[]).map((item) => (
             <button
               key={item}
               className={'tool ' + (tool === item ? 'active' : '')}
-              data-label={TOOL_LABELS[item]}
-              aria-label={TOOL_LABELS[item]}
+              data-label={TOOL_LABELS[locale][item]}
+              aria-label={TOOL_LABELS[locale][item]}
               onClick={() => {
                 setTool(item);
                 if (item !== 'polycut') setPolygonPoints([]);
@@ -3384,8 +3460,8 @@ export default function Home() {
           <span className="tool-divider" />
           <button
             className="tool"
-            data-label="Annuler"
-            aria-label="Annuler"
+            data-label={t('Undo', 'Annuler')}
+            aria-label={t('Undo', 'Annuler')}
             onClick={undo}
             disabled={!past.length}
           >
@@ -3393,8 +3469,8 @@ export default function Home() {
           </button>
           <button
             className="tool"
-            data-label="Rétablir"
-            aria-label="Rétablir"
+            data-label={t('Redo', 'Rétablir')}
+            aria-label={t('Redo', 'Rétablir')}
             onClick={redo}
             disabled={!future.length}
           >
@@ -3403,8 +3479,8 @@ export default function Home() {
           <span className="tool-spacer" />
           <button
             className="tool danger"
-            data-label="Supprimer la sélection"
-            aria-label="Supprimer la sélection"
+            data-label={t('Delete selection', 'Supprimer la sélection')}
+            aria-label={t('Delete selection', 'Supprimer la sélection')}
             onClick={deleteSelected}
             disabled={!selected}
           >
@@ -3419,18 +3495,18 @@ export default function Home() {
             <div className="tool-context">
               <span className="mini-tool">{toolIcons[tool]}</span>
               <div>
-                <strong>{TOOL_LABELS[tool]}</strong>
-                <span>{TOOL_HELP[tool]}</span>
+                <strong>{TOOL_LABELS[locale][tool]}</strong>
+                <span>{TOOL_HELP[locale][tool]}</span>
               </div>
             </div>
             <div className="zoom-controls">
               <button className="paste-shortcut" onClick={() => pasteImageFromClipboard().catch(() => undefined)}>
-                Coller <kbd>Ctrl+V</kbd>
+                {t('Paste', 'Coller')} <kbd>Ctrl+V</kbd>
               </button>
               <i className="zoom-divider" />
-              <button aria-label="Réduire le zoom" onClick={() => changeZoom(zoomRef.current - 0.1)}>−</button>
+              <button aria-label={t('Zoom out', 'Réduire le zoom')} onClick={() => changeZoom(zoomRef.current - 0.1)}>−</button>
               <span>{Math.round(zoom * 100)}%</span>
-              <button aria-label="Augmenter le zoom" onClick={() => changeZoom(zoomRef.current + 0.1)}>+</button>
+              <button aria-label={t('Zoom in', 'Augmenter le zoom')} onClick={() => changeZoom(zoomRef.current + 0.1)}>+</button>
             </div>
           </div>
 
@@ -3475,24 +3551,24 @@ export default function Home() {
             ) : (
               <div className="drop-card">
                 <div className="drop-icon">⌁</div>
-                <p className="eyebrow">NOUVELLE PLANCHE</p>
-                <h1>Dépose une image ou une vidéo</h1>
-                <p>PNG, JPG, WebP, MP4 ou WebM — tous les fichiers restent sur cet ordinateur.</p>
+                <p className="eyebrow">{t('NEW BOARD', 'NOUVELLE PLANCHE')}</p>
+                <h1>{t('Drop an image or video', 'Dépose une image ou une vidéo')}</h1>
+                <p>{t('PNG, JPG, WebP, MP4, or WebM — every file remains on this computer.', 'PNG, JPG, WebP, MP4 ou WebM — tous les fichiers restent sur cet ordinateur.')}</p>
                 <div className="import-actions">
                   <button className="button primary large" onClick={() => imageInputRef.current?.click()}>
-                    Choisir une image
+                    {t('Choose an image', 'Choisir une image')}
                   </button>
                   <button className="button ghost large" onClick={() => videoInputRef.current?.click()}>
-                    Choisir une vidéo
+                    {t('Choose a video', 'Choisir une vidéo')}
                   </button>
                   <button className="button ghost large" onClick={() => pasteImageFromClipboard().catch(() => undefined)}>
-                    Coller l’image
+                    {t('Paste image', 'Coller l’image')}
                   </button>
                 </div>
-                <span>ou glisse-dépose un fichier · Ctrl+V fonctionne pour les images</span>
+                <span>{t('or drag and drop a file · Ctrl+V works for images', 'ou glisse-dépose un fichier · Ctrl+V fonctionne pour les images')}</span>
                 {hasLocalDraft && (
                   <button className="text-button" onClick={() => resumeDraft().catch(() => undefined)}>
-                    Reprendre le dernier projet
+                    {t('Resume last project', 'Reprendre le dernier projet')}
                   </button>
                 )}
               </div>
@@ -3500,8 +3576,8 @@ export default function Home() {
             {isDraggingImage && (
               <div className="stage-drop-overlay" aria-live="polite">
                 <span>↓</span>
-                <strong>Dépose le fichier ici</strong>
-                <small>Image ou vidéo, il restera traité localement</small>
+                <strong>{t('Drop the file here', 'Dépose le fichier ici')}</strong>
+                <small>{t('Image or video, it will remain processed locally', 'Image ou vidéo, il restera traité localement')}</small>
               </div>
             )}
             {importNotice && <div className="import-notice" role="status">{importNotice}</div>}
@@ -3518,8 +3594,8 @@ export default function Home() {
           </div>
 
           <footer className="stage-footer">
-            <span>{annotations.length} correction{annotations.length === 1 ? '' : 's'}</span>
-            <span>{imageSize.width ? imageSize.width + ' × ' + imageSize.height + ' px · Molette : zoom · clic droit : déplacer' : 'Aucune image'}</span>
+            <span>{annotations.length} {annotations.length === 1 ? t('correction', 'correction') : t('corrections', 'corrections')}</span>
+            <span>{imageSize.width ? imageSize.width + ' × ' + imageSize.height + t(' px · Wheel: zoom · right click: move', ' px · Molette : zoom · clic droit : déplacer') : t('No image', 'Aucune image')}</span>
             <span className="legal-status">
               {saveStatus}
               <a href="https://github.com/MrMybal/CyAnnota" target="_blank" rel="noreferrer">Source · AGPL-3.0</a>
@@ -3531,10 +3607,10 @@ export default function Home() {
           <section className="panel-section layers-section">
             <div className="inspector-heading">
               <div>
-                <p className="eyebrow">ORGANISATION</p>
-                <h2>Calques</h2>
+                <p className="eyebrow">{t('ORGANIZATION', 'ORGANISATION')}</p>
+                <h2>{t('Layers', 'Calques')}</h2>
               </div>
-              <button className="icon-button" title="Ajouter un calque" onClick={addLayer}>+</button>
+              <button className="icon-button" title={t('Add a layer', 'Ajouter un calque')} onClick={addLayer}>+</button>
             </div>
 
             <div className="layers-list">
@@ -3547,7 +3623,7 @@ export default function Home() {
                   <input
                     type="color"
                     className="layer-color-input"
-                    aria-label={'Couleur du calque ' + layer.name}
+                    aria-label={t('Layer color ', 'Couleur du calque ') + layer.name}
                     value={layer.color}
                     onClick={(event) => event.stopPropagation()}
                     onChange={(event) => {
@@ -3558,11 +3634,11 @@ export default function Home() {
                   />
                   <button className="layer-name" onDoubleClick={() => renameLayer(layer)}>
                     <strong>{layer.name}</strong>
-                    <span>{annotations.filter((annotation) => annotation.layerId === layer.id).length} élément(s)</span>
+                    <span>{annotations.filter((annotation) => annotation.layerId === layer.id).length} {t('item(s)', 'élément(s)')}</span>
                   </button>
                   <button
                     className={'visibility ' + (layer.visible ? 'visible' : '')}
-                    title={layer.visible ? 'Masquer ce calque' : 'Afficher ce calque'}
+                    title={layer.visible ? t('Hide this layer', 'Masquer ce calque') : t('Show this layer', 'Afficher ce calque')}
                     onClick={(event) => {
                       event.stopPropagation();
                       toggleLayer(layer.id);
@@ -3573,27 +3649,27 @@ export default function Home() {
                 </div>
               ))}
             </div>
-            <p className="micro-hint">Double-clique le nom d’un calque pour le renommer.</p>
+            <p className="micro-hint">{t('Double-click a layer name to rename it.', 'Double-clique le nom d’un calque pour le renommer.')}</p>
           </section>
 
           <section className="general-message">
             <label htmlFor="global-message">
-              <span>MESSAGE DE LA CAPTURE</span>
-              <small>Contexte général ajouté au prompt</small>
+              <span>{t('CAPTURE MESSAGE', 'MESSAGE DE LA CAPTURE')}</span>
+              <small>{t('General context added to the prompt', 'Contexte général ajouté au prompt')}</small>
             </label>
             <textarea
               id="global-message"
               value={globalInstructions}
               onChange={(event) => setGlobalInstructions(event.target.value)}
-              placeholder="Ex. Je veux conserver le style général, mais rendre l’écran plus clair et plus compact…"
+              placeholder={t('Example: Keep the overall style, but make the screen clearer and more compact…', 'Ex. Je veux conserver le style général, mais rendre l’écran plus clair et plus compact…')}
             />
           </section>
 
           <section className="corrections-section">
             <div className="corrections-heading">
               <div>
-                <p className="eyebrow">ANNOTATIONS</p>
-                <h2>Corrections <span>{annotations.length}</span></h2>
+                <p className="eyebrow">{t('ANNOTATIONS', 'ANNOTATIONS')}</p>
+                <h2>{t('Corrections', 'Corrections')} <span>{annotations.length}</span></h2>
               </div>
             </div>
 
@@ -3601,7 +3677,7 @@ export default function Home() {
               {!annotations.length && (
                 <div className="empty-notes">
                   <span>01</span>
-                  <p>Sélectionne un outil puis dessine sur l’image pour créer ta première correction.</p>
+                  <p>{t('Select a tool, then draw on the image to create your first correction.', 'Sélectionne un outil puis dessine sur l’image pour créer ta première correction.')}</p>
                 </div>
               )}
 
@@ -3621,11 +3697,11 @@ export default function Home() {
                       {String(index + 1).padStart(2, '0')}
                     </span>
                     <span className="correction-copy">
-                      <strong>{CATEGORY_LABELS[annotation.category]} · {TYPE_LABELS[annotation.type]}</strong>
-                      <span>{annotation.description || 'Message à préciser'}</span>
+                      <strong>{CATEGORY_LABELS[locale][annotation.category]} · {TYPE_LABELS[locale][annotation.type]}</strong>
+                      <span>{annotation.description || t('Message to specify', 'Message à préciser')}</span>
                       {annotation.groupId && (
                         <em>
-                          Dans cadre {String(annotations.findIndex((item) => item.id === annotation.groupId) + 1).padStart(2, '0')}
+                          {t('In frame ', 'Dans cadre ')}{String(annotations.findIndex((item) => item.id === annotation.groupId) + 1).padStart(2, '0')}
                         </em>
                       )}
                     </span>
@@ -3647,32 +3723,32 @@ export default function Home() {
               {isDraggingReference && (
                 <div className="reference-drop-overlay" aria-live="polite">
                   <span>＋</span>
-                  <strong>Ajouter comme référence</strong>
-                  <small>Cette image restera liée uniquement à cette correction.</small>
+                  <strong>{t('Add as reference', 'Ajouter comme référence')}</strong>
+                  <small>{t('This image will remain linked only to this correction.', 'Cette image restera liée uniquement à cette correction.')}</small>
                 </div>
               )}
               <div className="editor-heading">
                 <div>
                   <p className="eyebrow">CORRECTION {String(annotations.findIndex((item) => item.id === selected.id) + 1).padStart(2, '0')}</p>
-                  <h3>{TYPE_LABELS[selected.type]}</h3>
+                  <h3>{TYPE_LABELS[locale][selected.type]}</h3>
                 </div>
-                <button className="close-editor" title="Fermer" onClick={() => setSelectedId(null)}>×</button>
+                <button className="close-editor" title={t('Close', 'Fermer')} onClick={() => setSelectedId(null)}>×</button>
               </div>
 
               <div className="form-grid">
                 <label>
-                  <span>Action</span>
+                  <span>{t('Action', 'Action')}</span>
                   <select
                     value={selected.category}
                     onChange={(event) => updateAnnotation(selected.id, { category: event.target.value as Category })}
                   >
-                    {(Object.keys(CATEGORY_LABELS) as Category[]).map((category) => (
-                      <option key={category} value={category}>{CATEGORY_LABELS[category]}</option>
+                    {(Object.keys(CATEGORY_LABELS[locale]) as Category[]).map((category) => (
+                      <option key={category} value={category}>{CATEGORY_LABELS[locale][category]}</option>
                     ))}
                   </select>
                 </label>
                 <label>
-                  <span>Calque</span>
+                  <span>{t('Layer', 'Calque')}</span>
                   <select
                     value={selected.layerId}
                     onChange={(event) => {
@@ -3690,19 +3766,19 @@ export default function Home() {
 
               {selected.type !== 'frame' && (
                 <label className="group-field">
-                  <span>Cadre associé</span>
+                  <span>{t('Linked frame', 'Cadre associé')}</span>
                   <select
                     value={selected.groupId || ''}
                     onChange={(event) =>
                       updateAnnotation(selected.id, { groupId: event.target.value || undefined })
                     }
                   >
-                    <option value="">Aucun cadre</option>
+                    <option value="">{t('No frame', 'Aucun cadre')}</option>
                     {annotations
                       .filter((annotation): annotation is FrameAnnotation => annotation.type === 'frame')
                       .map((frame) => (
                         <option key={frame.id} value={frame.id}>
-                          Cadre {String(annotations.findIndex((item) => item.id === frame.id) + 1).padStart(2, '0')}
+                          {t('Frame ', 'Cadre ')}{String(annotations.findIndex((item) => item.id === frame.id) + 1).padStart(2, '0')}
                         </option>
                       ))}
                   </select>
@@ -3711,18 +3787,18 @@ export default function Home() {
 
               {selected.type === 'frame' && (
                 <div className="frame-summary">
-                  <span>Groupe actif</span>
+                  <span>{t('Active group', 'Groupe actif')}</span>
                   <strong>
-                    {annotations.filter((annotation) => annotation.groupId === selected.id).length} élément(s) lié(s)
+                    {annotations.filter((annotation) => annotation.groupId === selected.id).length} {t('linked item(s)', 'élément(s) lié(s)')}
                   </strong>
-                  <small>Les formes et notes créées dans ce cadre sont automatiquement regroupées.</small>
+                  <small>{t('Shapes and notes created in this frame are grouped automatically.', 'Les formes et notes créées dans ce cadre sont automatiquement regroupées.')}</small>
                 </div>
               )}
 
               {selected.type === 'shape' && (
                 <div className="shape-controls">
                   <label>
-                    <span>Forme</span>
+                    <span>{t('Shape', 'Forme')}</span>
                     <select
                       value={selected.shape}
                       onChange={(event) =>
@@ -3733,11 +3809,11 @@ export default function Home() {
                     >
                       <option value="rectangle">Rectangle</option>
                       <option value="ellipse">Ellipse</option>
-                      <option value="line">Ligne</option>
+                      <option value="line">{t('Line', 'Ligne')}</option>
                     </select>
                   </label>
                   <label>
-                    <span>Remplissage</span>
+                    <span>{t('Fill', 'Remplissage')}</span>
                     <input
                       type="color"
                       value={selected.fillColor}
@@ -3752,7 +3828,7 @@ export default function Home() {
               {selected.type === 'color' && (
                 <div className="color-replacement">
                   <div>
-                    <span>Couleur prélevée</span>
+                    <span>{t('Sampled color', 'Couleur prélevée')}</span>
                     <input
                       type="color"
                       value={selected.sampledColor}
@@ -3764,7 +3840,7 @@ export default function Home() {
                   </div>
                   <b>→</b>
                   <div>
-                    <span>Couleur souhaitée</span>
+                    <span>{t('Requested color', 'Couleur souhaitée')}</span>
                     <input
                       type="color"
                       value={selected.replacementColor}
@@ -3778,29 +3854,29 @@ export default function Home() {
               )}
 
               <label className="message-field" data-reference-paste="true">
-                <span>Message lié à l’image</span>
+                <span>{t('Message linked to the image', 'Message lié à l’image')}</span>
                 <textarea
                   value={selected.description}
                   onChange={(event) => updateAnnotation(selected.id, { description: event.target.value })}
-                  placeholder="Explique exactement ce que tu veux changer ici…"
+                  placeholder={t('Explain exactly what you want to change here…', 'Explique exactement ce que tu veux changer ici…')}
                 />
               </label>
 
               {selected.type === 'cut' && (
                 <div className="cut-summary">
-                  <span>{selected.polygon?.length ? 'Découpe polygonale déplaçable' : 'Découpe déplaçable'}</span>
+                  <span>{selected.polygon?.length ? t('Movable polygon cutout', 'Découpe polygonale déplaçable') : t('Movable cutout', 'Découpe déplaçable')}</span>
                   <strong>Δx {Math.round(selected.x - selected.sourceX)} px · Δy {Math.round(selected.y - selected.sourceY)} px</strong>
-                  <small>Sélectionne l’outil ↖ et fais glisser l’élément sur l’image.</small>
+                  <small>{t('Select the ↖ tool and drag the item over the image.', 'Sélectionne l’outil ↖ et fais glisser l’élément sur l’image.')}</small>
                 </div>
               )}
 
               <div className="references" data-reference-paste="true">
                 <div className="references-heading">
                   <div>
-                    <span>Images de référence</span>
-                    <small>{selected.type === 'frame' ? 'Liées à ce cadre · dépôt ou Ctrl+V dans le message' : 'Liées à cette correction · dépôt ou Ctrl+V dans le message'}</small>
+                    <span>{t('Reference images', 'Images de référence')}</span>
+                    <small>{selected.type === 'frame' ? t('Linked to this frame · drop or Ctrl+V in the message', 'Liées à ce cadre · dépôt ou Ctrl+V dans le message') : t('Linked to this correction · drop or Ctrl+V in the message', 'Liées à cette correction · dépôt ou Ctrl+V dans le message')}</small>
                   </div>
-                  <button className="mini-button" onClick={() => referenceInputRef.current?.click()}>+ Ajouter</button>
+                  <button className="mini-button" onClick={() => referenceInputRef.current?.click()}>+ {t('Add', 'Ajouter')}</button>
                 </div>
 
                 <input
@@ -3821,7 +3897,7 @@ export default function Home() {
                       <div className="reference-item" key={reference.id}>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={reference.dataUrl} alt={reference.name} />
-                        <button title="Retirer cette référence" onClick={() => removeReference(reference.id)}>×</button>
+                        <button title={t('Remove this reference', 'Retirer cette référence')} onClick={() => removeReference(reference.id)}>×</button>
                         <span>{reference.name}</span>
                       </div>
                     ))}
@@ -3829,7 +3905,7 @@ export default function Home() {
                 )}
               </div>
 
-              <button className="delete-button" onClick={deleteSelected}>Supprimer cette correction</button>
+              <button className="delete-button" onClick={deleteSelected}>{t('Delete this correction', 'Supprimer cette correction')}</button>
             </section>
           )}
         </aside>

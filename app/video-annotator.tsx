@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { AppLocale, DEFAULT_LOCALE, translate } from './i18n';
 
 type Point = { x: number; y: number };
 export type VideoAnnotationType = 'rect' | 'arrow' | 'note' | 'draw';
@@ -73,6 +74,8 @@ type VideoWorkspaceProps = {
   onExportWorkspace?: () => void;
   workspaceStatus?: string;
   workspaceBusy?: boolean;
+  locale: AppLocale;
+  onLocaleChange: (locale: AppLocale) => void;
 };
 
 type VideoTool = 'select' | 'pan' | VideoAnnotationType;
@@ -86,13 +89,23 @@ type VideoDraft = {
 };
 type CompressionQuality = 'high' | 'balanced' | 'light';
 
-const VIDEO_TOOL_LABELS: Record<VideoTool, string> = {
-  select: 'Sélectionner une correction',
-  pan: 'Main — déplacer la vidéo',
-  rect: 'Encadrer une zone',
-  arrow: 'Tracer une flèche',
-  note: 'Placer une note',
-  draw: 'Dessiner librement',
+const VIDEO_TOOL_LABELS: Record<AppLocale, Record<VideoTool, string>> = {
+  en: {
+    select: 'Select an annotation',
+    pan: 'Hand — move the video',
+    rect: 'Frame an area',
+    arrow: 'Draw an arrow',
+    note: 'Place a note',
+    draw: 'Draw freely',
+  },
+  fr: {
+    select: 'Sélectionner une correction',
+    pan: 'Main — déplacer la vidéo',
+    rect: 'Encadrer une zone',
+    arrow: 'Tracer une flèche',
+    note: 'Placer une note',
+    draw: 'Dessiner librement',
+  },
 };
 
 const VIDEO_TOOL_ICONS: Record<VideoTool, string> = {
@@ -443,39 +456,40 @@ export async function renderAnnotatedVideoFrameStop(stop: VideoFrameStop) {
   });
 }
 
-export function buildVideoPrompt(project: VideoProjectData) {
+export function buildVideoPrompt(project: VideoProjectData, locale: AppLocale = DEFAULT_LOCALE) {
+  const t = (english: string, french: string) => translate(locale, english, french);
   const frameStops = [...(project.frameStops || [])].sort((a, b) => a.time - b.time);
   const isDeliveryProject = project.sourceTrimStart !== undefined || project.sourceTrimEnd !== undefined;
   const bounds = videoTrimBounds(project);
   const sourceTrimStart = isDeliveryProject ? project.sourceTrimStart ?? 0 : bounds.start;
   const sourceTrimEnd = isDeliveryProject ? project.sourceTrimEnd ?? project.duration : bounds.end;
   const lines = [
-    '# Brief de corrections vidéo — ' + project.title,
+    t('# Video correction brief — ', '# Brief de corrections vidéo — ') + project.title,
     '',
     isDeliveryProject
-      ? 'Applique les corrections temporelles ci-dessous à la vidéo découpée et encodée « ' + project.sourcePath + ' ».'
-      : 'Applique les corrections temporelles ci-dessous à la vidéo source « ' + project.sourcePath + ' ».',
+      ? t('Apply the timed corrections below to the trimmed and encoded video “', 'Applique les corrections temporelles ci-dessous à la vidéo découpée et encodée « ') + project.sourcePath + t('”.', ' ».')
+      : t('Apply the timed corrections below to the source video “', 'Applique les corrections temporelles ci-dessous à la vidéo source « ') + project.sourcePath + t('”.', ' ».'),
     '',
-    isDeliveryProject ? '## Découpe fournie' : '## Découpe à produire',
+    isDeliveryProject ? t('## Provided cut', '## Découpe fournie') : t('## Cut to produce', '## Découpe à produire'),
     '',
-    '- Portion conservée depuis la source : ' + formatTime(sourceTrimStart, true) + ' → ' + formatTime(sourceTrimEnd, true) + '.',
+    t('- Segment kept from the source: ', '- Portion conservée depuis la source : ') + formatTime(sourceTrimStart, true) + ' → ' + formatTime(sourceTrimEnd, true) + '.',
     isDeliveryProject
-      ? '- Durée de la vidéo fournie : ' + formatTime(project.duration, true) + '.'
-      : '- Durée de la vidéo source : ' + formatTime(project.duration, true) + '.',
+      ? t('- Provided video duration: ', '- Durée de la vidéo fournie : ') + formatTime(project.duration, true) + '.'
+      : t('- Source video duration: ', '- Durée de la vidéo source : ') + formatTime(project.duration, true) + '.',
     isDeliveryProject
-      ? '- Les timecodes ci-dessous sont relatifs au début de la vidéo découpée.'
-      : '- Les timecodes ci-dessous restent relatifs à la vidéo source complète.',
+      ? t('- The timecodes below are relative to the start of the trimmed video.', '- Les timecodes ci-dessous sont relatifs au début de la vidéo découpée.')
+      : t('- The timecodes below remain relative to the complete source video.', '- Les timecodes ci-dessous restent relatifs à la vidéo source complète.'),
     isDeliveryProject
       ? project.originalIncluded
-        ? '- La vidéo source originale est également jointe comme donnée de référence.'
-        : '- La vidéo source originale n’est pas incluse dans ce paquet léger.'
-      : '- La version découpée encodée est jointe sous « ' + (project.trimmedPath || videoSelectionPath(project)) + ' » et la source originale reste incluse.',
+        ? t('- The original source video is also included as reference data.', '- La vidéo source originale est également jointe comme donnée de référence.')
+        : t('- The original source video is not included in this lightweight package.', '- La vidéo source originale n’est pas incluse dans ce paquet léger.')
+      : t('- The encoded trimmed version is included at “', '- La version découpée encodée est jointe sous « ') + (project.trimmedPath || videoSelectionPath(project)) + t('”, and the original source remains included.', ' » et la source originale reste incluse.'),
     '',
-    '## Intention générale',
+    t('## General intent', '## Intention générale'),
     '',
-    project.generalInstructions.trim() || 'Aucune instruction générale supplémentaire.',
+    project.generalInstructions.trim() || t('No additional general instruction.', 'Aucune instruction générale supplémentaire.'),
     '',
-    '## Corrections temporelles',
+    t('## Timed corrections', '## Corrections temporelles'),
     '',
   ];
   project.annotations.forEach((annotation, index) => {
@@ -483,39 +497,39 @@ export function buildVideoPrompt(project: VideoProjectData) {
     lines.push(
       '### ' + String(index + 1).padStart(2, '0') + ' — ' + formatTime(annotation.start, true) + ' → ' + formatTime(annotation.end, true),
       '',
-      '- Type : ' + VIDEO_TOOL_LABELS[annotation.type],
-      '- Zone : x=' + Math.round(bounds.x) + ', y=' + Math.round(bounds.y) + ', largeur=' + Math.round(bounds.w) + ', hauteur=' + Math.round(bounds.h),
-      '- Instruction : ' + (annotation.message.trim() || 'Instruction à préciser.'),
-      '- Capture : captures/' + String(index + 1).padStart(2, '0') + '-annotation.png',
+      t('- Type: ', '- Type : ') + VIDEO_TOOL_LABELS[locale][annotation.type],
+      t('- Area: x=', '- Zone : x=') + Math.round(bounds.x) + ', y=' + Math.round(bounds.y) + t(', width=', ', largeur=') + Math.round(bounds.w) + t(', height=', ', hauteur=') + Math.round(bounds.h),
+      t('- Instruction: ', '- Instruction : ') + (annotation.message.trim() || t('Instruction to specify.', 'Instruction à préciser.')),
+      t('- Capture: captures/', '- Capture : captures/') + String(index + 1).padStart(2, '0') + '-annotation.png',
       '',
     );
   });
-  if (!project.annotations.length) lines.push('Aucune correction temporelle annotée.', '');
-  lines.push('## Arrêts sur image', '');
+  if (!project.annotations.length) lines.push(t('No timed correction was annotated.', 'Aucune correction temporelle annotée.'), '');
+  lines.push(t('## Frame stops', '## Arrêts sur image'), '');
   frameStops.forEach((stop, index) => {
     const stopAnnotations = stop.annotations || [];
     lines.push(
       '### Frame ' + String(index + 1).padStart(2, '0') + ' — ' + formatTime(stop.time, true),
       '',
-      '- Image exportée : frames/' + videoFrameStopFileName(stop, index),
+      t('- Exported image: frames/', '- Image exportée : frames/') + videoFrameStopFileName(stop, index),
       ...(stopAnnotations.length
-        ? ['- Image avec annotations : frames/' + videoFrameStopAnnotatedFileName(stop, index)]
+        ? [t('- Annotated image: frames/', '- Image avec annotations : frames/') + videoFrameStopAnnotatedFileName(stop, index)]
         : []),
       ...(stop.frameIndex === undefined
-        ? ['- Arrêt créé directement depuis la vidéo à ce timecode.']
-        : ['- Frame source exacte : #' + (stop.frameIndex + 1) + ' (index décodé ' + stop.frameIndex + ').']),
-      '- Utiliser cette image comme capture autonome de la vidéo à cet instant.',
+        ? [t('- Stop created directly from the video at this timecode.', '- Arrêt créé directement depuis la vidéo à ce timecode.')]
+        : [t('- Exact source frame: #', '- Frame source exacte : #') + (stop.frameIndex + 1) + t(' (decoded index ', ' (index décodé ') + stop.frameIndex + ').']),
+      t('- Use this image as a standalone capture of the video at this instant.', '- Utiliser cette image comme capture autonome de la vidéo à cet instant.'),
       ...stopAnnotations.map((annotation, annotationIndex) =>
-        '- Correction ' + String(annotationIndex + 1).padStart(2, '0') + ' · ' + VIDEO_TOOL_LABELS[annotation.type] + ' : ' + (annotation.message.trim() || 'Instruction à préciser.')
+        t('- Correction ', '- Correction ') + String(annotationIndex + 1).padStart(2, '0') + ' · ' + VIDEO_TOOL_LABELS[locale][annotation.type] + t(': ', ' : ') + (annotation.message.trim() || t('Instruction to specify.', 'Instruction à préciser.'))
       ),
       '',
     );
   });
-  if (!frameStops.length) lines.push('Aucun arrêt sur image demandé.', '');
+  if (!frameStops.length) lines.push(t('No frame stop requested.', 'Aucun arrêt sur image demandé.'), '');
   lines.push(
-    '## Critère de fin',
+    t('## Completion criteria', '## Critère de fin'),
     '',
-    'Respecter les timecodes et conserver toutes les séquences qui ne sont pas explicitement concernées.',
+    t('Respect the timecodes and preserve every sequence that is not explicitly affected.', 'Respecter les timecodes et conserver toutes les séquences qui ne sont pas explicitement concernées.'),
   );
   return lines.join('\n');
 }
@@ -534,11 +548,14 @@ export default function VideoAnnotator({
   onExportWorkspace,
   workspaceStatus,
   workspaceBusy = false,
+  locale,
+  onLocaleChange,
 }: VideoWorkspaceProps) {
+  const t = (english: string, french: string) => translate(locale, english, french);
   const [originalSourceUrl] = useState(() => URL.createObjectURL(file));
   const [playbackUrl, setPlaybackUrl] = useState(originalSourceUrl);
   const [title, setTitle] = useState(
-    initialProject?.title || file.name.replace(/\.[^.]+$/, '') || 'Corrections vidéo',
+    initialProject?.title || file.name.replace(/\.[^.]+$/, '') || t('Video corrections', 'Corrections vidéo'),
   );
   const [generalInstructions, setGeneralInstructions] = useState(
     initialProject?.generalInstructions || '',
@@ -561,15 +578,15 @@ export default function VideoAnnotator({
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1);
-  const [saveStatus, setSaveStatus] = useState('Prêt');
+  const [saveStatus, setSaveStatus] = useState(() => translate(locale, 'Ready', 'Prêt'));
   const [compressionOpen, setCompressionOpen] = useState(false);
   const [compressionQuality, setCompressionQuality] = useState<CompressionQuality>('balanced');
   const [compressionProgress, setCompressionProgress] = useState(0);
-  const [compressionStatus, setCompressionStatus] = useState('Moteur prêt à charger');
+  const [compressionStatus, setCompressionStatus] = useState(() => translate(locale, 'Engine ready to load', 'Moteur prêt à charger'));
   const [isCompressing, setIsCompressing] = useState(false);
   const [isPreparingPreview, setIsPreparingPreview] = useState(false);
   const [previewProgress, setPreviewProgress] = useState(0);
-  const [previewStatus, setPreviewStatus] = useState('Aperçu compatible prêt à créer');
+  const [previewStatus, setPreviewStatus] = useState(() => translate(locale, 'Compatible preview ready to create', 'Aperçu compatible prêt à créer'));
   const [hasCompatiblePreview, setHasCompatiblePreview] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<'timeline' | 'capture' | 'step'>('timeline');
   const [isExtractingFrame, setIsExtractingFrame] = useState(false);
@@ -611,6 +628,25 @@ export default function VideoAnnotator({
       : workspaceMode === 'step' ? selectedFrameStop?.annotations || [] : [],
     [annotations, currentTime, selectedFrameStop, workspaceMode],
   );
+
+  function requestLocaleChange(nextLocale: AppLocale) {
+    setSaveStatus((current) =>
+      current === 'Ready' || current === 'Prêt'
+        ? translate(nextLocale, 'Ready', 'Prêt')
+        : current,
+    );
+    setCompressionStatus((current) =>
+      current === 'Engine ready to load' || current === 'Moteur prêt à charger'
+        ? translate(nextLocale, 'Engine ready to load', 'Moteur prêt à charger')
+        : current,
+    );
+    setPreviewStatus((current) =>
+      current === 'Compatible preview ready to create' || current === 'Aperçu compatible prêt à créer'
+        ? translate(nextLocale, 'Compatible preview ready to create', 'Aperçu compatible prêt à créer')
+        : current,
+    );
+    onLocaleChange(nextLocale);
+  }
 
   useEffect(() => {
     const video = videoRef.current;
@@ -784,7 +820,7 @@ export default function VideoAnnotator({
     if (!video?.videoWidth || !video.videoHeight || !onCaptureFrame) return;
     video.pause();
     setIsPlaying(false);
-    setSaveStatus('Création de la capture…');
+    setSaveStatus(t('Creating capture…', 'Création de la capture…'));
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -805,7 +841,7 @@ export default function VideoAnnotator({
       { type: 'image/png', lastModified: Date.now() },
     );
     await onCaptureFrame(captureFile, captureTime);
-    setSaveStatus('Capture ouverte dans un onglet image');
+    setSaveStatus(t('Capture opened in an image tab', 'Capture ouverte dans un onglet image'));
   }
 
 
@@ -869,7 +905,7 @@ export default function VideoAnnotator({
           if (nextFrameTime >= duration) break;
         }
       }
-      setSaveStatus((direction < 0 ? 'Image précédente' : 'Image suivante') + ' · ' + formatTime(presentedFrameTimeRef.current, true));
+      setSaveStatus((direction < 0 ? t('Previous frame', 'Image précédente') : t('Next frame', 'Image suivante')) + ' · ' + formatTime(presentedFrameTimeRef.current, true));
     } finally {
       setIsSteppingFrame(false);
     }
@@ -886,16 +922,16 @@ export default function VideoAnnotator({
       setSelectedFrameStopId(duplicate.id);
       setSelectedId(null);
       setTool('rect');
-      setSaveStatus('Ce stop existe déjà · annotations activées');
+      setSaveStatus(t('This stop already exists · annotations enabled', 'Ce stop existe déjà · annotations activées'));
       return;
     }
     if (isPreparingPreview || isCompressing || isExtractingFrame || isSteppingFrame) return;
     if (file.size >= 2 * 1024 * 1024 * 1024) {
-      window.alert('L’extraction locale accepte des vidéos de moins de 2 Go.');
+      window.alert(t('Local extraction accepts videos smaller than 2 GB.', 'L’extraction locale accepte des vidéos de moins de 2 Go.'));
       return;
     }
     setIsExtractingFrame(true);
-    setSaveStatus('Extraction PNG pleine résolution à ' + formatTime(frameTime, true) + '…');
+    setSaveStatus(t('Extracting full-resolution PNG at ', 'Extraction PNG pleine résolution à ') + formatTime(frameTime, true) + '…');
     ffmpegOperationRef.current = 'frame';
     let ffmpeg: import('@ffmpeg/ffmpeg').FFmpeg | null = null;
     const extension = file.name.split('.').pop()?.replace(/[^a-z0-9]/gi, '') || 'video';
@@ -926,11 +962,11 @@ export default function VideoAnnotator({
       setSelectedFrameStopId(stop.id);
       setSelectedId(null);
       setTool('rect');
-      setSaveStatus('Stop créé en pleine résolution · dessine maintenant tes annotations');
+      setSaveStatus(t('Full-resolution stop created · draw your annotations now', 'Stop créé en pleine résolution · dessine maintenant tes annotations'));
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      setSaveStatus('Extraction de la frame impossible');
-      window.alert('Impossible d’extraire cette frame exacte.\n\n' + detail);
+      setSaveStatus(t('Frame extraction failed', 'Extraction de la frame impossible'));
+      window.alert(t('Unable to extract this exact frame.\n\n', 'Impossible d’extraire cette frame exacte.\n\n') + detail);
     } finally {
       if (ffmpeg) {
         await ffmpeg.deleteFile(inputName).catch(() => undefined);
@@ -958,7 +994,7 @@ export default function VideoAnnotator({
     setSelectedFrameStopId((current) => (current === id ? null : current));
     setSelectedId(null);
     setTool('pan');
-    setSaveStatus('Arrêt image supprimé');
+    setSaveStatus(t('Frame stop deleted', 'Arrêt image supprimé'));
   }
   function annotationWindow() {
     if (workspaceMode === 'step' && selectedFrameStop) {
@@ -991,8 +1027,8 @@ export default function VideoAnnotator({
       end: window.end,
       color: '#ff5c49',
       message: isFrameAnnotation
-        ? 'Décris la correction à appliquer sur cette image.'
-        : 'Décris la correction à appliquer pendant cette séquence.',
+        ? t('Describe the correction to apply to this frame.', 'Décris la correction à appliquer sur cette image.')
+        : t('Describe the correction to apply during this sequence.', 'Décris la correction à appliquer pendant cette séquence.'),
       x: shape.x,
       y: shape.y,
       x2: shape.x2,
@@ -1124,13 +1160,13 @@ export default function VideoAnnotator({
     const end = effectiveTrimEnd || duration;
     const next = Math.max(0, Math.min(Number.isFinite(value) ? value : 0, Math.max(0, end - 0.05)));
     setTrimStart(next);
-    setSaveStatus('Début conservé · ' + formatTime(next, true));
+    setSaveStatus(t('Kept start · ', 'Début conservé · ') + formatTime(next, true));
   }
 
   function updateTrimEnd(value: number) {
     const next = Math.max(trimStart + 0.05, Math.min(duration, Number.isFinite(value) ? value : duration));
     setTrimEnd(next);
-    setSaveStatus('Fin conservée · ' + formatTime(next, true));
+    setSaveStatus(t('Kept end · ', 'Fin conservée · ') + formatTime(next, true));
   }
 
   function handleVideoTimeUpdate(video: HTMLVideoElement) {
@@ -1215,7 +1251,7 @@ export default function VideoAnnotator({
   }
 
   function buildPrompt() {
-    return buildVideoPrompt(createVideoDeliveryProject(projectData()));
+    return buildVideoPrompt(createVideoDeliveryProject(projectData()), locale);
   }
   function projectData(): VideoProjectData {
     const sourcePath = initialProject?.sourcePath || 'media/original-' + safeFileName(file.name);
@@ -1239,7 +1275,7 @@ export default function VideoAnnotator({
   }
 
   async function saveProject() {
-    setSaveStatus('Création du projet vidéo…');
+    setSaveStatus(t('Creating video project…', 'Création du projet vidéo…'));
     try {
       const baseProject = projectData();
       const bounds = videoTrimBounds(baseProject);
@@ -1249,13 +1285,13 @@ export default function VideoAnnotator({
         originalSourcePath: baseProject.sourcePath,
         originalIncluded: true,
       };
-      setSaveStatus('Encodage de la portion conservée…');
+      setSaveStatus(t('Encoding kept segment…', 'Encodage de la portion conservée…'));
       const trimmedVideo = await encodeTrimmedVideo(file, bounds.start, bounds.end, (progress) =>
-        setSaveStatus('Encodage de la portion conservée · ' + progress + '%'),
+        setSaveStatus(t('Encoding kept segment · ', 'Encodage de la portion conservée · ') + progress + '%'),
       );
       const zip = new JSZip();
       zip.file('video-project.cyannota.json', JSON.stringify(project, null, 2));
-      zip.file('prompt.md', buildVideoPrompt(project));
+      zip.file('prompt.md', buildVideoPrompt(project, locale));
       zip.file(project.sourcePath, file, { compression: 'STORE' });
       zip.file(project.trimmedPath || videoSelectionPath(project), trimmedVideo, { compression: 'STORE' });
       annotations.forEach((annotation, index) => {
@@ -1295,27 +1331,27 @@ export default function VideoAnnotator({
       }
       const archive = await zip.generateAsync(
         { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 4 }, streamFiles: true },
-        (metadata) => setSaveStatus('Création du ZIP · ' + Math.round(metadata.percent) + '%'),
+        (metadata) => setSaveStatus(t('Creating ZIP · ', 'Création du ZIP · ') + Math.round(metadata.percent) + '%'),
       );
       const saved = await onSaveBlob(archive, safeFileName(title) + '.cyannota-video.zip');
-      setSaveStatus(saved ? 'Projet vidéo enregistré' : 'Enregistrement annulé');
+      setSaveStatus(saved ? t('Video project saved', 'Projet vidéo enregistré') : t('Save cancelled', 'Enregistrement annulé'));
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      setSaveStatus('Échec de l’enregistrement');
-      window.alert('Impossible d’enregistrer le projet vidéo.\n\n' + detail);
+      setSaveStatus(t('Save failed', 'Échec de l’enregistrement'));
+      window.alert(t('Unable to save the video project.\n\n', 'Impossible d’enregistrer le projet vidéo.\n\n') + detail);
     }
   }
 
   async function copyPrompt() {
     await navigator.clipboard.writeText(buildPrompt());
-    setSaveStatus('Prompt copié');
+    setSaveStatus(t('Prompt copied', 'Prompt copié'));
   }
 
   async function getFfmpeg() {
     if (ffmpegRef.current) return ffmpegRef.current;
-    if (ffmpegOperationRef.current === 'preview') setPreviewStatus('Chargement du moteur local…');
-    else if (ffmpegOperationRef.current === 'compression') setCompressionStatus('Chargement du moteur local…');
-    else setSaveStatus('Chargement du moteur vidéo local…');
+    if (ffmpegOperationRef.current === 'preview') setPreviewStatus(t('Loading local engine…', 'Chargement du moteur local…'));
+    else if (ffmpegOperationRef.current === 'compression') setCompressionStatus(t('Loading local engine…', 'Chargement du moteur local…'));
+    else setSaveStatus(t('Loading local video engine…', 'Chargement du moteur vidéo local…'));
     const { FFmpeg } = await import('@ffmpeg/ffmpeg');
     const ffmpeg = new FFmpeg();
     ffmpeg.on('progress', ({ progress }) => {
@@ -1323,7 +1359,7 @@ export default function VideoAnnotator({
         const nextProgress = Math.max(0, Math.min(99, Math.round(progress * 100)));
         if (ffmpegOperationRef.current === 'preview') setPreviewProgress(nextProgress);
         else if (ffmpegOperationRef.current === 'compression') setCompressionProgress(nextProgress);
-        else if (ffmpegOperationRef.current === 'frame') setSaveStatus('Extraction PNG · ' + nextProgress + '%');
+        else if (ffmpegOperationRef.current === 'frame') setSaveStatus(t('PNG extraction · ', 'Extraction PNG · ') + nextProgress + '%');
       }
     });
     ffmpeg.on('log', ({ message }) => {
@@ -1338,21 +1374,21 @@ export default function VideoAnnotator({
       coreURL: new URL('ffmpeg-core.js', resources.baseUrl).href,
       wasmURL: resources.wasmUrl,
     });    ffmpegRef.current = ffmpeg;
-    if (ffmpegOperationRef.current === 'preview') setPreviewStatus('Moteur local chargé');
-    else if (ffmpegOperationRef.current === 'compression') setCompressionStatus('Moteur local chargé');
-    else setSaveStatus('Moteur vidéo local chargé');
+    if (ffmpegOperationRef.current === 'preview') setPreviewStatus(t('Local engine loaded', 'Moteur local chargé'));
+    else if (ffmpegOperationRef.current === 'compression') setCompressionStatus(t('Local engine loaded', 'Moteur local chargé'));
+    else setSaveStatus(t('Local video engine loaded', 'Moteur vidéo local chargé'));
     return ffmpeg;
   }
 
   async function createCompatiblePreview() {
     if (isPreparingPreview || isCompressing || isExtractingFrame) return;
     if (file.size >= 2 * 1024 * 1024 * 1024) {
-      window.alert('La création d’un aperçu local accepte des vidéos de moins de 2 Go.');
+      window.alert(t('Local preview creation accepts videos smaller than 2 GB.', 'La création d’un aperçu local accepte des vidéos de moins de 2 Go.'));
       return;
     }
     setIsPreparingPreview(true);
     setPreviewProgress(0);
-    setPreviewStatus('Préparation de la vidéo originale…');
+    setPreviewStatus(t('Preparing original video…', 'Préparation de la vidéo originale…'));
     previewCanceledRef.current = false;
     ffmpegOperationRef.current = 'preview';
     let ffmpeg: import('@ffmpeg/ffmpeg').FFmpeg | null = null;
@@ -1362,10 +1398,10 @@ export default function VideoAnnotator({
     try {
       ffmpeg = await getFfmpeg();
       if (previewCanceledRef.current) return;
-      setPreviewStatus('Lecture du fichier original…');
+      setPreviewStatus(t('Reading original file…', 'Lecture du fichier original…'));
       await ffmpeg.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
       if (previewCanceledRef.current) return;
-      setPreviewStatus('Création de l’aperçu H.264 compatible…');
+      setPreviewStatus(t('Creating compatible H.264 preview…', 'Création de l’aperçu H.264 compatible…'));
       const exitCode = await ffmpeg.exec([
         '-i', inputName,
         '-map', '0:v:0',
@@ -1393,16 +1429,16 @@ export default function VideoAnnotator({
       setCurrentTime(0);
       setPlaybackUrl(nextUrl);
       setPreviewProgress(100);
-      setPreviewStatus('Aperçu compatible prêt');
-      setSaveStatus('Aperçu compatible prêt · original conservé');
+      setPreviewStatus(t('Compatible preview ready', 'Aperçu compatible prêt'));
+      setSaveStatus(t('Compatible preview ready · original preserved', 'Aperçu compatible prêt · original conservé'));
     } catch (error) {
       if (!previewCanceledRef.current) {
         const detail = error instanceof Error ? error.message : String(error);
-        setPreviewStatus('Impossible de créer l’aperçu compatible');
+        setPreviewStatus(t('Unable to create compatible preview', 'Impossible de créer l’aperçu compatible'));
         window.alert(
-          'Impossible de convertir cette vidéo pour la lecture.\n\n' +
+          t('Unable to convert this video for playback.\n\n', 'Impossible de convertir cette vidéo pour la lecture.\n\n') +
           detail +
-          '\n\nLe fichier original n’a pas été modifié.',
+          t('\n\nThe original file was not modified.', '\n\nLe fichier original n’a pas été modifié.'),
         );
       }
     } finally {
@@ -1422,12 +1458,12 @@ export default function VideoAnnotator({
     ffmpegRef.current = null;
     setIsPreparingPreview(false);
     setPreviewProgress(0);
-    setPreviewStatus('Création de l’aperçu annulée');
+    setPreviewStatus(t('Preview creation cancelled', 'Création de l’aperçu annulée'));
   }
   async function compressVideo() {
     if (isPreparingPreview || isCompressing || isExtractingFrame) return;
     if (file.size >= 2 * 1024 * 1024 * 1024) {
-      window.alert('La compression web accepte des vidéos de moins de 2 Go.');
+      window.alert(t('Web compression accepts videos smaller than 2 GB.', 'La compression web accepte des vidéos de moins de 2 Go.'));
       return;
     }
     setIsCompressing(true);
@@ -1440,7 +1476,7 @@ export default function VideoAnnotator({
     const outputName = 'output-' + createId() + '.mp4';
     try {
       ffmpeg = await getFfmpeg();
-      setCompressionStatus('Préparation de la vidéo…');
+      setCompressionStatus(t('Preparing video…', 'Préparation de la vidéo…'));
       await ffmpeg.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
       const qualityArgs: Record<CompressionQuality, string[]> = {
         high: ['-preset', 'medium', '-crf', '19'],
@@ -1454,7 +1490,7 @@ export default function VideoAnnotator({
           '30',
         ],
       };
-      setCompressionStatus('Compression locale en cours…');
+      setCompressionStatus(t('Local compression in progress…', 'Compression locale en cours…'));
       const exitCode = await ffmpeg.exec([
         '-i',
         inputName,
@@ -1481,13 +1517,13 @@ export default function VideoAnnotator({
       const buffer = output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer;
       const blob = new Blob([buffer], { type: 'video/mp4' });
       setCompressionProgress(100);
-      setCompressionStatus('Compression terminée · ' + (blob.size / 1024 / 1024).toFixed(1) + ' Mo');
+      setCompressionStatus(t('Compression complete · ', 'Compression terminée · ') + (blob.size / 1024 / 1024).toFixed(1) + ' ' + t('MB', 'Mo'));
       await onSaveBlob(blob, safeFileName(title) + '-compressee.mp4');
     } catch (error) {
       if (!compressionCanceledRef.current) {
         const detail = error instanceof Error ? error.message : String(error);
-        setCompressionStatus('Compression impossible');
-        window.alert('Impossible de compresser cette vidéo localement.\n\n' + detail);
+        setCompressionStatus(t('Compression failed', 'Compression impossible'));
+        window.alert(t('Unable to compress this video locally.\n\n', 'Impossible de compresser cette vidéo localement.\n\n') + detail);
       }
     } finally {
       if (ffmpeg && !compressionCanceledRef.current) {
@@ -1506,7 +1542,7 @@ export default function VideoAnnotator({
     ffmpegRef.current = null;
     setIsCompressing(false);
     setCompressionProgress(0);
-    setCompressionStatus('Compression annulée');
+    setCompressionStatus(t('Compression cancelled', 'Compression annulée'));
   }
 
   function timelineSeek(event: ReactPointerEvent<HTMLDivElement>) {
@@ -1518,62 +1554,70 @@ export default function VideoAnnotator({
     <main className="video-shell">
       <header className="video-topbar">
         <div className="video-brand">
-          {onClose && <button className="video-back" onClick={onClose} aria-label="Revenir aux images">←</button>}
-          <span className="brand-mark">Cy</span>
-          <div><strong>CyAnnota Vidéo</strong><span>Annotations temporelles locales</span></div>
+          {onClose && <button className="video-back" onClick={onClose} aria-label={t('Back to images', 'Revenir aux images')}>←</button>}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img className="brand-mark" src="/cyannota-logo.png" alt="" />
+          <div><strong>{t('CyAnnota Video', 'CyAnnota Vidéo')}</strong><span>{t('Local timed annotations', 'Annotations temporelles locales')}</span></div>
         </div>
         <label className="project-title video-title">
           <span className="status-dot" />
-          <input aria-label="Nom du projet vidéo" value={title} onChange={(event) => setTitle(event.target.value)} />
+          <input aria-label={t('Video project name', 'Nom du projet vidéo')} value={title} onChange={(event) => setTitle(event.target.value)} />
         </label>
         <div className="top-actions">
+          <label className="language-picker" title={t('Interface and prompt language', 'Langue de l’interface et des prompts')}>
+            <span>{locale.toUpperCase()}</span>
+            <select value={locale} onChange={(event) => requestLocaleChange(event.target.value as AppLocale)} aria-label={t('Language', 'Langue')}>
+              <option value="en">English</option>
+              <option value="fr">Français</option>
+            </select>
+          </label>
           <span className="video-local-badge">● 100% local</span>
-          {onOpenWorkspace && <button className="button ghost compact" onClick={onOpenWorkspace}>Ouvrir</button>}
-          {onAddImage && <button className="button ghost compact" onClick={onAddImage}>Image</button>}
-          {onAddVideo && <button className="button ghost compact" onClick={onAddVideo}>Vidéo</button>}
+          {onOpenWorkspace && <button className="button ghost compact" onClick={onOpenWorkspace}>{t('Open', 'Ouvrir')}</button>}
+          {onAddImage && <button className="button ghost compact" onClick={onAddImage}>{t('Image', 'Image')}</button>}
+          {onAddVideo && <button className="button ghost compact" onClick={onAddVideo}>{t('Video', 'Vidéo')}</button>}
           <button className="button ghost compact" onClick={() => copyPrompt().catch(() => undefined)}>Prompt</button>
-          <button className="button ghost compact" onClick={() => setCompressionOpen(true)} disabled={isPreparingPreview || isExtractingFrame}>Compresser</button>
-          <button className="button ghost compact" onClick={onSaveWorkspace || (() => saveProject().catch(() => undefined))} disabled={workspaceBusy}>{workspaceBusy ? 'Encodage…' : 'Sauver'}</button>
-          {onExportWorkspace && <button className="button primary" onClick={onExportWorkspace} disabled={workspaceBusy}>Exporter</button>}
+          <button className="button ghost compact" onClick={() => setCompressionOpen(true)} disabled={isPreparingPreview || isExtractingFrame}>{t('Compress', 'Compresser')}</button>
+          <button className="button ghost compact" onClick={onSaveWorkspace || (() => saveProject().catch(() => undefined))} disabled={workspaceBusy}>{workspaceBusy ? t('Encoding…', 'Encodage…') : t('Save', 'Sauver')}</button>
+          {onExportWorkspace && <button className="button primary" onClick={onExportWorkspace} disabled={workspaceBusy}>{t('Export', 'Exporter')}</button>}
         </div>
       </header>
 
       {tabBar}
       <div className="video-modebar">
-        <div className="video-mode-switch" aria-label="Mode d’édition vidéo">
-          <button className={workspaceMode === 'timeline' ? 'active' : ''} onClick={() => { setSelectedFrameStopId(null); setSelectedId(null); restoreVideoSurfaceSize(); setWorkspaceMode('timeline'); setTool('select'); }}>Timeline complète</button>
-          <button className={workspaceMode === 'capture' ? 'active' : ''} onClick={() => { setSelectedFrameStopId(null); setSelectedId(null); restoreVideoSurfaceSize(); setWorkspaceMode('capture'); setTool('pan'); }}>Capture → onglet</button>
-          <button className={workspaceMode === 'step' ? 'active' : ''} onClick={() => { videoRef.current?.pause(); setIsPlaying(false); setSelectedFrameStopId(null); setSelectedId(null); setWorkspaceMode('step'); setTool('pan'); }}>Step frame → export</button>
+        <div className="video-mode-switch" aria-label={t('Video editing mode', 'Mode d’édition vidéo')}>
+          <button className={workspaceMode === 'timeline' ? 'active' : ''} onClick={() => { setSelectedFrameStopId(null); setSelectedId(null); restoreVideoSurfaceSize(); setWorkspaceMode('timeline'); setTool('select'); }}>{t('Full timeline', 'Timeline complète')}</button>
+          <button className={workspaceMode === 'capture' ? 'active' : ''} onClick={() => { setSelectedFrameStopId(null); setSelectedId(null); restoreVideoSurfaceSize(); setWorkspaceMode('capture'); setTool('pan'); }}>{t('Capture → tab', 'Capture → onglet')}</button>
+          <button className={workspaceMode === 'step' ? 'active' : ''} onClick={() => { videoRef.current?.pause(); setIsPlaying(false); setSelectedFrameStopId(null); setSelectedId(null); setWorkspaceMode('step'); setTool('pan'); }}>{t('Step frame → export', 'Step frame → export')}</button>
         </div>
         <span>
           {workspaceMode === 'timeline'
-            ? 'Annotations temporelles · molette : zoom · clic droit : déplacer'
+            ? t('Timed annotations · wheel: zoom · right click: move', 'Annotations temporelles · molette : zoom · clic droit : déplacer')
             : workspaceMode === 'capture'
-              ? 'Crée immédiatement un onglet image éditable depuis la frame affichée'
-              : 'Arrête la vidéo · avance ou recule d’une image · crée un stop annotable'}
+              ? t('Immediately create an editable image tab from the displayed frame', 'Crée immédiatement un onglet image éditable depuis la frame affichée')
+              : t('Pause the video · move one frame forward or back · create an annotatable stop', 'Arrête la vidéo · avance ou recule d’une image · crée un stop annotable')}
         </span>
         {workspaceMode === 'capture' && (
           <button className="button primary compact" onClick={() => captureCurrentFrame().catch((error) => window.alert(error instanceof Error ? error.message : String(error)))} disabled={!duration || Boolean(videoError)}>
-            Capturer à {formatTime(currentTime, true)}
+            {t('Capture at ', 'Capturer à ')}{formatTime(currentTime, true)}
           </button>
         )}
-        {workspaceMode === 'step' && <span className="video-step-hint">Les commandes image par image apparaissent sur la vidéo lorsqu’elle est en pause.</span>}
+        {workspaceMode === 'step' && <span className="video-step-hint">{t('Frame-by-frame controls appear over the video when it is paused.', 'Les commandes image par image apparaissent sur la vidéo lorsqu’elle est en pause.')}</span>}
         <div className="video-view-zoom">
-          <button onClick={() => changeViewZoom(viewZoomRef.current - 0.1)} aria-label="Réduire le zoom vidéo">−</button>
+          <button onClick={() => changeViewZoom(viewZoomRef.current - 0.1)} aria-label={t('Zoom video out', 'Réduire le zoom vidéo')}>−</button>
           <strong>{Math.round(viewZoom * 100)}%</strong>
-          <button onClick={() => changeViewZoom(viewZoomRef.current + 0.1)} aria-label="Augmenter le zoom vidéo">+</button>
-          <button onClick={resetVideoView}>Ajuster</button>
+          <button onClick={() => changeViewZoom(viewZoomRef.current + 0.1)} aria-label={t('Zoom video in', 'Augmenter le zoom vidéo')}>+</button>
+          <button onClick={resetVideoView}>{t('Fit', 'Ajuster')}</button>
         </div>
       </div>
 
       <section className={'video-layout ' + (tabBar ? 'has-media-tabs' : '')}>
-        <aside className="toolrail video-toolrail" aria-label="Outils vidéo">
+        <aside className="toolrail video-toolrail" aria-label={t('Video tools', 'Outils vidéo')}>
           {(Object.keys(VIDEO_TOOL_ICONS) as VideoTool[]).map((item) => (
             <button
               key={item}
               className={'tool ' + (tool === item ? 'active' : '')}
-              data-label={VIDEO_TOOL_LABELS[item]}
-              aria-label={VIDEO_TOOL_LABELS[item]}
+              data-label={VIDEO_TOOL_LABELS[locale][item]}
+              aria-label={VIDEO_TOOL_LABELS[locale][item]}
               onClick={() => setTool(item)}
               disabled={workspaceMode === 'capture'
                 ? item !== 'pan'
@@ -1585,7 +1629,7 @@ export default function VideoAnnotator({
             </button>
           ))}
           <span className="tool-spacer" />
-          <button className="tool danger" data-label="Supprimer" onClick={deleteSelected} disabled={!selected}>×</button>
+          <button className="tool danger" data-label={t('Delete', 'Supprimer')} onClick={deleteSelected} disabled={!selected}>×</button>
         </aside>
 
         <section className={'video-center ' + (workspaceMode !== 'timeline' ? 'capture-mode' : '')}>
@@ -1603,7 +1647,7 @@ export default function VideoAnnotator({
                 src={playbackUrl}
                 preload="metadata"
                 onLoadedMetadata={handleLoadedMetadata}
-                onError={() => setVideoError(hasCompatiblePreview ? 'L’aperçu converti reste illisible.' : 'Le codec de ce MP4 ne peut pas être lu directement.')}
+                onError={() => setVideoError(hasCompatiblePreview ? t('The converted preview remains unreadable.', 'L’aperçu converti reste illisible.') : t('This MP4 codec cannot be played directly.', 'Le codec de ce MP4 ne peut pas être lu directement.'))}
                 onTimeUpdate={(event) => handleVideoTimeUpdate(event.currentTarget)}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
@@ -1613,7 +1657,7 @@ export default function VideoAnnotator({
                 <img
                   className="video-step-preview"
                   src={selectedFrameStop.imageData}
-                  alt={'Stop à ' + formatTime(selectedFrameStop.time, true)}
+                  alt={t('Stop at ', 'Stop à ') + formatTime(selectedFrameStop.time, true)}
                   draggable={false}
                   onLoad={(event) => {
                     const width = event.currentTarget.naturalWidth || 16;
@@ -1641,11 +1685,11 @@ export default function VideoAnnotator({
               />
               {workspaceMode === 'step' && !isPlaying && (
                 <div className="video-direct-step-controls">
-                  <button onClick={() => stepVideoFrame(-1).catch(() => undefined)} disabled={isSteppingFrame || isExtractingFrame || !duration}>−1 image</button>
+                  <button onClick={() => stepVideoFrame(-1).catch(() => undefined)} disabled={isSteppingFrame || isExtractingFrame || !duration}>−1 {t('frame', 'image')}</button>
                   <button className="create-stop" onClick={() => createFrameStopAtCurrentTime().catch(() => undefined)} disabled={isSteppingFrame || isExtractingFrame || !duration}>
-                    {isExtractingFrame ? 'Extraction PNG…' : selectedFrameStop ? 'Stop actif · annoter ici' : 'Créer un stop ici'}
+                    {isExtractingFrame ? t('Extracting PNG…', 'Extraction PNG…') : selectedFrameStop ? t('Active stop · annotate here', 'Stop actif · annoter ici') : t('Create a stop here', 'Créer un stop ici')}
                   </button>
-                  <button onClick={() => stepVideoFrame(1).catch(() => undefined)} disabled={isSteppingFrame || isExtractingFrame || !duration}>+1 image</button>
+                  <button onClick={() => stepVideoFrame(1).catch(() => undefined)} disabled={isSteppingFrame || isExtractingFrame || !duration}>+1 {t('frame', 'image')}</button>
                 </div>
               )}
             </div>
@@ -1656,30 +1700,30 @@ export default function VideoAnnotator({
                   <>
                     <span>{previewStatus}</span>
                     <div className="video-preview-progress"><progress max="100" value={previewProgress} /><b>{previewProgress}%</b></div>
-                    <button className="button ghost compact" onClick={cancelCompatiblePreview}>Annuler</button>
+                    <button className="button ghost compact" onClick={cancelCompatiblePreview}>{t('Cancel', 'Annuler')}</button>
                   </>
                 ) : !hasCompatiblePreview ? (
                   <>
-                    <span>CyAnnota peut créer localement une copie de lecture H.264. L’original Discord restera intact dans le projet.</span>
-                    <button className="button primary compact" onClick={() => createCompatiblePreview().catch(() => undefined)}>Créer un aperçu compatible</button>
+                    <span>{t('CyAnnota can create a local H.264 playback copy. The Discord original will remain untouched in the project.', 'CyAnnota peut créer localement une copie de lecture H.264. L’original Discord restera intact dans le projet.')}</span>
+                    <button className="button primary compact" onClick={() => createCompatiblePreview().catch(() => undefined)}>{t('Create compatible preview', 'Créer un aperçu compatible')}</button>
                   </>
                 ) : (
-                  <span>La conversion a réussi, mais Chromium ne parvient toujours pas à afficher la vidéo.</span>
+                  <span>{t('Conversion succeeded, but Chromium still cannot display the video.', 'La conversion a réussi, mais Chromium ne parvient toujours pas à afficher la vidéo.')}</span>
                 )}
               </div>
             ) : (
-              !duration && !(workspaceMode === 'step' && selectedFrameStop) && <div className="video-loading">Préparation de la vidéo…</div>
+              !duration && !(workspaceMode === 'step' && selectedFrameStop) && <div className="video-loading">{t('Preparing video…', 'Préparation de la vidéo…')}</div>
             )}
           </div>
 
           <div className="video-transport">
-            <button onClick={() => seek(currentTime - 1)} aria-label="Reculer d’une seconde">−1s</button>
-            <button className="video-play" onClick={togglePlayback} aria-label={isPlaying ? 'Pause' : 'Lire'}>{isPlaying ? 'Ⅱ' : '▶'}</button>
-            <button onClick={() => seek(currentTime + 1)} aria-label="Avancer d’une seconde">+1s</button>
+            <button onClick={() => seek(currentTime - 1)} aria-label={t('Back one second', 'Reculer d’une seconde')}>−1s</button>
+            <button className="video-play" onClick={togglePlayback} aria-label={isPlaying ? t('Pause', 'Pause') : t('Play', 'Lire')}>{isPlaying ? 'Ⅱ' : '▶'}</button>
+            <button onClick={() => seek(currentTime + 1)} aria-label={t('Forward one second', 'Avancer d’une seconde')}>+1s</button>
             <strong>{formatTime(currentTime, true)}</strong>
             <span>/ {formatTime(duration, true)}</span>
             <input
-              aria-label="Position de lecture"
+              aria-label={t('Playback position', 'Position de lecture')}
               type="range"
               min="0"
               max={Math.max(duration, 0.01)}
@@ -1691,7 +1735,7 @@ export default function VideoAnnotator({
 
           {workspaceMode === 'timeline' && <div className="video-timeline-panel">
             <div className="video-timeline-heading">
-              <div><span>TIMELINE</span><strong>{annotations.length} correction{annotations.length === 1 ? '' : 's'} · {frameStops.length} arrêt{frameStops.length === 1 ? '' : 's'} image · {formatTime(keptDuration, true)} conservées</strong></div>
+              <div><span>TIMELINE</span><strong>{annotations.length} {annotations.length === 1 ? t('correction', 'correction') : t('corrections', 'corrections')} · {frameStops.length} {frameStops.length === 1 ? t('frame stop', 'arrêt image') : t('frame stops', 'arrêts image')} · {formatTime(keptDuration, true)} {t('kept', 'conservées')}</strong></div>
               <label>Zoom <input type="range" min="1" max="5" step="0.25" value={timelineZoom} onChange={(event) => setTimelineZoom(Number(event.target.value))} /></label>
             </div>
             <div className="video-timeline-scroll">
@@ -1705,8 +1749,8 @@ export default function VideoAnnotator({
                   <div className="video-trim-excluded video-trim-excluded-start" style={{ width: duration ? (trimStart / duration) * 100 + '%' : '0%' }} />
                   <div className="video-trim-kept" style={{ left: duration ? (trimStart / duration) * 100 + '%' : '0%', width: duration ? ((effectiveTrimEnd - trimStart) / duration) * 100 + '%' : '100%' }} />
                   <div className="video-trim-excluded video-trim-excluded-end" style={{ left: duration ? (effectiveTrimEnd / duration) * 100 + '%' : '100%' }} />
-                  <i className="video-trim-marker start" style={{ left: duration ? (trimStart / duration) * 100 + '%' : '0%' }} data-label="DÉBUT" />
-                  <i className="video-trim-marker end" style={{ left: duration ? (effectiveTrimEnd / duration) * 100 + '%' : '100%' }} data-label="FIN" />
+                  <i className="video-trim-marker start" style={{ left: duration ? (trimStart / duration) * 100 + '%' : '0%' }} data-label={t('START', 'DÉBUT')} />
+                  <i className="video-trim-marker end" style={{ left: duration ? (effectiveTrimEnd / duration) * 100 + '%' : '100%' }} data-label={t('END', 'FIN')} />
                   {annotations.map((annotation, index) => (
                     <button
                       key={annotation.id}
@@ -1733,7 +1777,7 @@ export default function VideoAnnotator({
                       onPointerDown={(event) => event.stopPropagation()}
                       onClick={() => selectFrameStop(stop)}
                       title={'Frame ' + String(index + 1).padStart(2, '0') + ' — ' + formatTime(stop.time, true)}
-                      aria-label={'Aller à la frame ' + String(index + 1).padStart(2, '0') + ' à ' + formatTime(stop.time, true)}
+                      aria-label={t('Go to frame ', 'Aller à la frame ') + String(index + 1).padStart(2, '0') + t(' at ', ' à ') + formatTime(stop.time, true)}
                     />
                   ))}
                   <i className="video-playhead" style={{ left: duration ? (currentTime / duration) * 100 + '%' : '0%' }} />
@@ -1746,42 +1790,42 @@ export default function VideoAnnotator({
         <aside className="video-inspector">
           <section className="video-trim-panel">
             <div className="video-trim-heading">
-              <div><p className="eyebrow">DÉCOUPE VIDÉO</p><strong>{formatTime(keptDuration, true)} conservées</strong></div>
-              <button className="button ghost compact" onClick={() => { setTrimStart(0); setTrimEnd(duration); setSaveStatus('Vidéo complète conservée'); }} disabled={!duration}>Tout garder</button>
+              <div><p className="eyebrow">{t('VIDEO TRIM', 'DÉCOUPE VIDÉO')}</p><strong>{formatTime(keptDuration, true)} {t('kept', 'conservées')}</strong></div>
+              <button className="button ghost compact" onClick={() => { setTrimStart(0); setTrimEnd(duration); setSaveStatus(t('Full video kept', 'Vidéo complète conservée')); }} disabled={!duration}>{t('Keep all', 'Tout garder')}</button>
             </div>
             <div className="video-trim-fields">
               <label>
-                <span>Début</span>
-                <div><input type="number" min="0" max={Math.max(0, effectiveTrimEnd - 0.05)} step="0.01" value={trimStart.toFixed(2)} onChange={(event) => updateTrimStart(Number(event.target.value))} /><button onClick={() => updateTrimStart(currentTime)}>Position actuelle</button></div>
+                <span>{t('Start', 'Début')}</span>
+                <div><input type="number" min="0" max={Math.max(0, effectiveTrimEnd - 0.05)} step="0.01" value={trimStart.toFixed(2)} onChange={(event) => updateTrimStart(Number(event.target.value))} /><button onClick={() => updateTrimStart(currentTime)}>{t('Current position', 'Position actuelle')}</button></div>
                 <input type="range" min="0" max={Math.max(duration, 0.05)} step="0.01" value={trimStart} onChange={(event) => updateTrimStart(Number(event.target.value))} />
               </label>
               <label>
-                <span>Fin</span>
-                <div><input type="number" min={trimStart + 0.05} max={duration} step="0.01" value={effectiveTrimEnd.toFixed(2)} onChange={(event) => updateTrimEnd(Number(event.target.value))} /><button onClick={() => updateTrimEnd(currentTime)}>Position actuelle</button></div>
+                <span>{t('End', 'Fin')}</span>
+                <div><input type="number" min={trimStart + 0.05} max={duration} step="0.01" value={effectiveTrimEnd.toFixed(2)} onChange={(event) => updateTrimEnd(Number(event.target.value))} /><button onClick={() => updateTrimEnd(currentTime)}>{t('Current position', 'Position actuelle')}</button></div>
                 <input type="range" min="0" max={Math.max(duration, 0.05)} step="0.01" value={effectiveTrimEnd} onChange={(event) => updateTrimEnd(Number(event.target.value))} />
               </label>
             </div>
-            <div className="video-trim-summary"><span>{formatTime(trimStart, true)}</span><i>→</i><span>{formatTime(effectiveTrimEnd, true)}</span><b>{duration > 0 ? Math.round((keptDuration / duration) * 100) : 0}% de la source</b></div>
-            <small>La portion conservée sera encodée pour Save et Export. Save garde aussi la source originale.</small>
+            <div className="video-trim-summary"><span>{formatTime(trimStart, true)}</span><i>→</i><span>{formatTime(effectiveTrimEnd, true)}</span><b>{duration > 0 ? Math.round((keptDuration / duration) * 100) : 0}% {t('of source', 'de la source')}</b></div>
+            <small>{t('The kept segment will be encoded for Save and Export. Save also retains the original source.', 'La portion conservée sera encodée pour Save et Export. Save garde aussi la source originale.')}</small>
           </section>
           {workspaceMode === 'capture' && (
             <section className="video-capture-panel">
-              <p className="eyebrow">CAPTURE À UN INSTANT</p>
+              <p className="eyebrow">{t('CAPTURE AT AN INSTANT', 'CAPTURE À UN INSTANT')}</p>
               <strong>{formatTime(currentTime, true)}</strong>
-              <span>La frame sera ouverte comme un nouvel onglet image avec tous les outils de découpe, formes, pipette et annotations.</span>
-              <button className="button primary" onClick={() => captureCurrentFrame().catch((error) => window.alert(error instanceof Error ? error.message : String(error)))} disabled={!duration || Boolean(videoError)}>Créer l’onglet image</button>
+              <span>{t('The frame will open as a new image tab with every cutout, shape, eyedropper, and annotation tool.', 'La frame sera ouverte comme un nouvel onglet image avec tous les outils de découpe, formes, pipette et annotations.')}</span>
+              <button className="button primary" onClick={() => captureCurrentFrame().catch((error) => window.alert(error instanceof Error ? error.message : String(error)))} disabled={!duration || Boolean(videoError)}>{t('Create image tab', 'Créer l’onglet image')}</button>
             </section>
           )}
           {workspaceMode === 'step' && (
             <section className="video-frame-stops-panel">
               <div className="video-frame-stops-heading">
-                <div><p className="eyebrow">STOPS ANNOTABLES</p><strong>{frameStops.length} stop{frameStops.length === 1 ? '' : 's'} créé{frameStops.length === 1 ? '' : 's'}</strong></div>
+                <div><p className="eyebrow">{t('ANNOTATABLE STOPS', 'STOPS ANNOTABLES')}</p><strong>{frameStops.length} {frameStops.length === 1 ? t('stop created', 'stop créé') : t('stops created', 'stops créés')}</strong></div>
               </div>
-              <span>Parcours directement la vidéo. Quand l’image voulue est affichée, crée un stop : seule cette image sera extraite en PNG pleine résolution.</span>
+              <span>{t('Browse the video directly. When the wanted frame is displayed, create a stop: only that frame will be extracted as a full-resolution PNG.', 'Parcours directement la vidéo. Quand l’image voulue est affichée, crée un stop : seule cette image sera extraite en PNG pleine résolution.')}</span>
               <div className="video-current-stop-summary">
-                <div><small>IMAGE AFFICHÉE</small><strong>{formatTime(currentTime, true)}</strong></div>
+                <div><small>{t('DISPLAYED FRAME', 'IMAGE AFFICHÉE')}</small><strong>{formatTime(currentTime, true)}</strong></div>
                 <button className="button primary compact" onClick={() => createFrameStopAtCurrentTime().catch(() => undefined)} disabled={isExtractingFrame || isSteppingFrame || !duration}>
-                  {isExtractingFrame ? 'Extraction PNG…' : selectedFrameStop ? 'Stop actif' : 'Créer un stop ici'}
+                  {isExtractingFrame ? t('Extracting PNG…', 'Extraction PNG…') : selectedFrameStop ? t('Active stop', 'Stop actif') : t('Create a stop here', 'Créer un stop ici')}
                 </button>
               </div>
               <div className="video-frame-stop-list">
@@ -1792,19 +1836,19 @@ export default function VideoAnnotator({
                       <strong>{formatTime(stop.time, true)}</strong>
                       <small>{(stop.annotations || []).length} annotation{(stop.annotations || []).length === 1 ? '' : 's'}</small>
                     </button>
-                    <button className="video-frame-stop-delete" onClick={() => removeFrameStop(stop.id)} aria-label={'Supprimer le stop ' + String(index + 1).padStart(2, '0')}>×</button>
+                    <button className="video-frame-stop-delete" onClick={() => removeFrameStop(stop.id)} aria-label={t('Delete stop ', 'Supprimer le stop ') + String(index + 1).padStart(2, '0')}>×</button>
                   </div>
                 ))}
-                {!frameStops.length && <p className="video-empty">Aucun stop. Mets la vidéo en pause puis utilise “Créer un stop ici”.</p>}
+                {!frameStops.length && <p className="video-empty">{t('No stops. Pause the video, then use “Create a stop here”.', 'Aucun stop. Mets la vidéo en pause puis utilise “Créer un stop ici”.')}</p>}
               </div>
             </section>
           )}
           <section className="video-general">
-            <p className="eyebrow">MESSAGE DE LA VIDÉO</p>
-            <textarea value={generalInstructions} onChange={(event) => setGeneralInstructions(event.target.value)} placeholder="Contexte général pour toutes les corrections…" />
+            <p className="eyebrow">{t('VIDEO MESSAGE', 'MESSAGE DE LA VIDÉO')}</p>
+            <textarea value={generalInstructions} onChange={(event) => setGeneralInstructions(event.target.value)} placeholder={t('General context for every correction…', 'Contexte général pour toutes les corrections…')} />
           </section>
           <section className="video-corrections">
-            <div className="video-corrections-heading"><div><p className="eyebrow">ANNOTATIONS</p><h2>{workspaceMode === 'step' ? 'Corrections du stop' : 'Corrections'} <span>{activeAnnotations.length}</span></h2></div></div>
+            <div className="video-corrections-heading"><div><p className="eyebrow">{t('ANNOTATIONS', 'ANNOTATIONS')}</p><h2>{workspaceMode === 'step' ? t('Stop corrections', 'Corrections du stop') : t('Corrections', 'Corrections')} <span>{activeAnnotations.length}</span></h2></div></div>
             <div className="video-correction-list">
               {activeAnnotations.map((annotation, index) => (
                 <button
@@ -1813,26 +1857,26 @@ export default function VideoAnnotator({
                   onClick={() => { setSelectedId(annotation.id); if (workspaceMode === 'timeline') seek(annotation.start); }}
                 >
                   <span style={{ background: annotation.color }}>{String(index + 1).padStart(2, '0')}</span>
-                  <div><strong>{VIDEO_TOOL_LABELS[annotation.type]}</strong><small>{workspaceMode === 'step' ? 'Image fixe · ' + formatTime(annotation.start, true) : formatTime(annotation.start, true) + ' → ' + formatTime(annotation.end, true)}</small><em>{annotation.message}</em></div>
+                  <div><strong>{VIDEO_TOOL_LABELS[locale][annotation.type]}</strong><small>{workspaceMode === 'step' ? t('Still image · ', 'Image fixe · ') + formatTime(annotation.start, true) : formatTime(annotation.start, true) + ' → ' + formatTime(annotation.end, true)}</small><em>{annotation.message}</em></div>
                 </button>
               ))}
-              {!activeAnnotations.length && <p className="video-empty">{workspaceMode === 'step' ? selectedFrameStop ? 'Choisis un outil puis dessine sur ce stop. Ces annotations resteront liées uniquement à cette image.' : 'Crée ou sélectionne un stop pour afficher ses annotations.' : workspaceMode === 'capture' ? 'Le mode Capture ne mélange pas les annotations de la timeline.' : 'Choisis un outil puis dessine directement sur la vidéo. La correction sera ajoutée à la timeline.'}</p>}
+              {!activeAnnotations.length && <p className="video-empty">{workspaceMode === 'step' ? selectedFrameStop ? t('Choose a tool, then draw on this stop. These annotations will remain linked only to this frame.', 'Choisis un outil puis dessine sur ce stop. Ces annotations resteront liées uniquement à cette image.') : t('Create or select a stop to display its annotations.', 'Crée ou sélectionne un stop pour afficher ses annotations.') : workspaceMode === 'capture' ? t('Capture mode does not mix timeline annotations.', 'Le mode Capture ne mélange pas les annotations de la timeline.') : t('Choose a tool, then draw directly on the video. The correction will be added to the timeline.', 'Choisis un outil puis dessine directement sur la vidéo. La correction sera ajoutée à la timeline.')}</p>}
             </div>
           </section>
 
           {selected && (
             <section className="video-editor">
-              <div className="video-editor-heading"><div><p className="eyebrow">CORRECTION</p><h3>{VIDEO_TOOL_LABELS[selected.type]}</h3></div><button onClick={() => setSelectedId(null)}>×</button></div>
+              <div className="video-editor-heading"><div><p className="eyebrow">CORRECTION</p><h3>{VIDEO_TOOL_LABELS[locale][selected.type]}</h3></div><button onClick={() => setSelectedId(null)}>×</button></div>
               {workspaceMode === 'timeline' && (
                 <div className="video-time-fields">
-                  <label><span>Début</span><input type="number" min="0" max={selected.end} step="0.01" value={selected.start.toFixed(2)} onChange={(event) => updateSelected({ start: Math.max(0, Math.min(Number(event.target.value), selected.end - 0.01)) })} /></label>
-                  <label><span>Fin</span><input type="number" min={selected.start} max={duration} step="0.01" value={selected.end.toFixed(2)} onChange={(event) => updateSelected({ end: Math.max(selected.start + 0.01, Math.min(duration, Number(event.target.value))) })} /></label>
+                  <label><span>{t('Start', 'Début')}</span><input type="number" min="0" max={selected.end} step="0.01" value={selected.start.toFixed(2)} onChange={(event) => updateSelected({ start: Math.max(0, Math.min(Number(event.target.value), selected.end - 0.01)) })} /></label>
+                  <label><span>{t('End', 'Fin')}</span><input type="number" min={selected.start} max={duration} step="0.01" value={selected.end.toFixed(2)} onChange={(event) => updateSelected({ end: Math.max(selected.start + 0.01, Math.min(duration, Number(event.target.value))) })} /></label>
                 </div>
               )}
-              <label className="video-color-field"><span>Couleur</span><input type="color" value={selected.color} onChange={(event) => updateSelected({ color: event.target.value })} /></label>
-              <label className="message-field"><span>{workspaceMode === 'step' ? 'Message lié à cette image' : 'Message lié à cette séquence'}</span><textarea value={selected.message} onChange={(event) => updateSelected({ message: event.target.value })} /></label>
-              {selected.snapshot && <img className="video-snapshot" src={selected.snapshot} alt="Capture de la correction" />}
-              <button className="delete-button" onClick={deleteSelected}>Supprimer cette correction</button>
+              <label className="video-color-field"><span>{t('Color', 'Couleur')}</span><input type="color" value={selected.color} onChange={(event) => updateSelected({ color: event.target.value })} /></label>
+              <label className="message-field"><span>{workspaceMode === 'step' ? t('Message linked to this frame', 'Message lié à cette image') : t('Message linked to this sequence', 'Message lié à cette séquence')}</span><textarea value={selected.message} onChange={(event) => updateSelected({ message: event.target.value })} /></label>
+              {selected.snapshot && <img className="video-snapshot" src={selected.snapshot} alt={t('Correction capture', 'Capture de la correction')} />}
+              <button className="delete-button" onClick={deleteSelected}>{t('Delete this correction', 'Supprimer cette correction')}</button>
             </section>
           )}
           <footer className="video-status">
@@ -1846,23 +1890,23 @@ export default function VideoAnnotator({
         <div className="modal-backdrop">
           <section className="video-compression-modal">
             <header className="modal-header">
-              <div><p className="eyebrow">COMPRESSION LOCALE</p><h2>Réduire la vidéo</h2><p>Tout le traitement reste dans ce navigateur. La vidéo originale n’est jamais modifiée.</p></div>
+              <div><p className="eyebrow">{t('LOCAL COMPRESSION', 'COMPRESSION LOCALE')}</p><h2>{t('Reduce video size', 'Réduire la vidéo')}</h2><p>{t('All processing remains in this browser. The original video is never modified.', 'Tout le traitement reste dans ce navigateur. La vidéo originale n’est jamais modifiée.')}</p></div>
               <button className="modal-close" onClick={() => !isCompressing && setCompressionOpen(false)} disabled={isCompressing}>×</button>
             </header>
-            <div className="video-source-summary"><div><span>Source</span><strong>{file.name}</strong></div><div><span>Taille</span><strong>{(file.size / 1024 / 1024).toFixed(1)} Mo</strong></div><div><span>Durée</span><strong>{formatTime(duration)}</strong></div></div>
+            <div className="video-source-summary"><div><span>{t('Source', 'Source')}</span><strong>{file.name}</strong></div><div><span>{t('Size', 'Taille')}</span><strong>{(file.size / 1024 / 1024).toFixed(1)} {t('MB', 'Mo')}</strong></div><div><span>{t('Duration', 'Durée')}</span><strong>{formatTime(duration)}</strong></div></div>
             <div className="video-quality-options">
               {([
-                ['high', 'Haute qualité', 'Image très proche de l’original, fichier plus lourd.'],
-                ['balanced', 'Équilibré', 'Bon compromis pour partager une capture d’interface.'],
-                ['light', 'Fichier léger', 'Réduit aussi la définition à 1280 px maximum.'],
+                ['high', t('High quality', 'Haute qualité'), t('Image very close to the original, with a larger file.', 'Image très proche de l’original, fichier plus lourd.')],
+                ['balanced', t('Balanced', 'Équilibré'), t('Good compromise for sharing an interface capture.', 'Bon compromis pour partager une capture d’interface.')],
+                ['light', t('Lightweight file', 'Fichier léger'), t('Also reduces resolution to a maximum of 1280 px.', 'Réduit aussi la définition à 1280 px maximum.')],
               ] as const).map(([value, label, help]) => (
                 <label key={value} className={compressionQuality === value ? 'selected' : ''}><input type="radio" name="video-quality" value={value} checked={compressionQuality === value} onChange={() => setCompressionQuality(value)} disabled={isCompressing} /><div><strong>{label}</strong><span>{help}</span></div></label>
               ))}
             </div>
             <div className="video-compression-progress"><div><span>{compressionStatus}</span><strong>{compressionProgress}%</strong></div><progress max="100" value={compressionProgress} /></div>
             <footer className="modal-actions">
-              {isCompressing ? <button className="button ghost" onClick={cancelCompression}>Annuler la compression</button> : <button className="button ghost" onClick={() => setCompressionOpen(false)}>Fermer</button>}
-              <button className="button primary large" onClick={() => compressVideo().catch(() => undefined)} disabled={isCompressing}>{isCompressing ? 'Compression en cours…' : 'Compresser et enregistrer'}</button>
+              {isCompressing ? <button className="button ghost" onClick={cancelCompression}>{t('Cancel compression', 'Annuler la compression')}</button> : <button className="button ghost" onClick={() => setCompressionOpen(false)}>{t('Close', 'Fermer')}</button>}
+              <button className="button primary large" onClick={() => compressVideo().catch(() => undefined)} disabled={isCompressing}>{isCompressing ? t('Compressing…', 'Compression en cours…') : t('Compress and save', 'Compresser et enregistrer')}</button>
             </footer>
           </section>
         </div>
