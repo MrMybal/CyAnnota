@@ -1,0 +1,8 @@
+{
+  "name": "cyannota-desktop",
+  "version": "0.3.4",
+  "private": true,
+  "description": "CyAnnota - application autonome d’annotation d’interfaces",
+  "main": "main.cjs",
+  "author": "CyberAlien"
+}

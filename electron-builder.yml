@@ -1,0 +1,22 @@
+appId: com.cyberalien.cyannota
+productName: CyAnnota
+electronVersion: 44.0.0
+electronDist: ../node_modules/electron/dist
+asar: true
+npmRebuild: false
+compression: maximum
+
+directories:
+  output: ../release
+
+files:
+  - main.cjs
+  - preload.cjs
+  - dist/renderer/**/*
+
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  artifactName: CyAnnota-${version}-portable.${ext}
