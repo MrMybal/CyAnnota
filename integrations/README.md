@@ -64,3 +64,7 @@ Pour CyCapture desktop, la méthode la plus simple et la plus fiable consiste à
 ## Évolution du stockage
 
 Le format comporte des numéros séparés (`formatVersion` pour le conteneur, `workspaceVersion` pour l’espace de travail). Une intégration doit ignorer les propriétés inconnues et refuser uniquement une version majeure qu’elle ne sait pas lire. Les médias restent référencés par leurs chemins internes, ce qui permettra ultérieurement un stockage partagé ou adressé par contenu sans casser les projets existants.
+
+## Licence du SDK
+
+Le SDK autonome `public/cyannota-integration.js` est distribué sous licence MIT. L’application CyAnnota reste distribuée sous `AGPL-3.0-only`.
