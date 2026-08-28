@@ -19,4 +19,26 @@ win:
     - target: portable
       arch:
         - x64
+    - target: nsis
+      arch:
+        - x64
+
+portable:
   artifactName: CyAnnota-${version}-portable.${ext}
+
+nsis:
+  artifactName: CyAnnota-${version}-setup.${ext}
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+fileAssociations:
+  - ext: cyannota
+    name: Projet CyAnnota
+    description: Projet image ou vidéo annoté avec CyAnnota
+    role: Editor
+    mimeType: application/x-cyannota
+
+protocols:
+  - name: Intégration CyAnnota
+    schemes:
+      - cyannota

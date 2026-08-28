@@ -149,7 +149,12 @@ type ProjectFile = {
   annotations: Annotation[];
 };
 
-type CyTaskBridge = {
+type ExportAudience = 'ai' | 'human';
+type ExportContainer = 'zip' | 'project';
+
+type IntegrationBridge = {
+  providerId: string;
+  providerLabel: string;
   session: string;
   parentOrigin: string;
   attachmentId: string;
@@ -157,7 +162,7 @@ type CyTaskBridge = {
   maximumDocumentBytes: number;
 };
 
-type CyTaskBridgeMessage = {
+type IntegrationBridgeMessage = {
   source?: unknown;
   type?: unknown;
   session?: unknown;
@@ -169,6 +174,9 @@ type CyTaskBridgeMessage = {
   document?: unknown;
   readOnly?: unknown;
   maximumDocumentBytes?: unknown;
+  exportAudience?: unknown;
+  exportContainer?: unknown;
+  includeOriginalVideos?: unknown;
   ok?: unknown;
   revision?: unknown;
   error?: unknown;
@@ -562,6 +570,8 @@ export default function Home() {
   const [globalInstructions, setGlobalInstructions] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
   const [exportPrompt, setExportPrompt] = useState('');
+  const [exportAudience, setExportAudience] = useState<ExportAudience>('ai');
+  const [exportContainer, setExportContainer] = useState<ExportContainer>('zip');
   const [includeOriginalVideosInExport, setIncludeOriginalVideosInExport] = useState(false);
   const [exportProgressLabel, setExportProgressLabel] = useState('');
   const [isExporting, setIsExporting] = useState(false);
@@ -574,7 +584,7 @@ export default function Home() {
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
   const [polygonPoints, setPolygonPoints] = useState<Point[]>([]);
   const [isDraggingReference, setIsDraggingReference] = useState(false);
-  const [cyTaskBridge, setCyTaskBridge] = useState<CyTaskBridge | null>(null);
+  const [integrationBridge, setIntegrationBridge] = useState<IntegrationBridge | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -591,7 +601,7 @@ export default function Home() {
   const spaceHeldRef = useRef(false);
   const zoomRef = useRef(zoom);
   const panRef = useRef<Point>(pan);
-  const cyTaskBridgeRef = useRef<CyTaskBridge | null>(null);
+  const integrationBridgeRef = useRef<IntegrationBridge | null>(null);
   const encodedVideoCacheRef = useRef(new Map<string, { signature: string; blob: Blob }>());
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) || tabs[0];
@@ -619,10 +629,15 @@ export default function Home() {
 
   useEffect(() => {
     const parameters = new URLSearchParams(window.location.search);
-    if (parameters.get('integration') !== 'cytask' || !window.opener) return;
+    const providerId = (parameters.get('integration') || '').toLowerCase();
+    if (!/^[a-z0-9._-]{2,40}$/.test(providerId) || !window.opener) return;
 
     const session = parameters.get('session') || '';
-    const attachmentId = parameters.get('attachmentId') || '';
+    const attachmentId = parameters.get('attachmentId') || parameters.get('mediaId') || 'media';
+    const requestedLabel = (parameters.get('integrationName') || '').trim();
+    const providerLabel = requestedLabel.slice(0, 50) || (
+      providerId === 'cytask' ? 'CyTask' : providerId === 'cycapture' ? 'CyCapture' : providerId
+    );
     const requestedParentOrigin = parameters.get('parentOrigin') || '';
     let parentOrigin = '';
     try {
@@ -637,13 +652,13 @@ export default function Home() {
     const opener = window.opener;
     const receive = (event: MessageEvent<unknown>) => {
       if (event.source !== opener || event.origin !== parentOrigin || !isRecord(event.data)) return;
-      const message = event.data as CyTaskBridgeMessage;
-      if (message.source !== 'cytask' || message.session !== session) return;
+      const message = event.data as IntegrationBridgeMessage;
+      if (message.source !== providerId || message.session !== session) return;
 
       if (message.type === 'open-media' && message.attachmentId === attachmentId) {
-        openCyTaskMedia(message, parentOrigin, session, attachmentId).catch((error) => {
-          const text = error instanceof Error ? error.message : 'Média CyTask invalide';
-          setSaveStatus('Échec du chargement CyTask');
+        openIntegrationMedia(message, parentOrigin, session, attachmentId, providerId, providerLabel).catch((error) => {
+          const text = error instanceof Error ? error.message : 'Média d’intégration invalide';
+          setSaveStatus('Échec du chargement ' + providerLabel);
           showImportNotice(text);
         });
         return;
@@ -653,34 +668,75 @@ export default function Home() {
         if (message.ok === true) {
           setSaveStatus(
             typeof message.revision === 'number'
-              ? 'Enregistré dans CyTask · rév. ' + message.revision
-              : 'Enregistré dans CyTask',
+              ? 'Enregistré dans ' + providerLabel + ' · rév. ' + message.revision
+              : 'Enregistré dans ' + providerLabel,
           );
-          showImportNotice('Annotations enregistrées dans la tâche CyTask');
+          showImportNotice('Annotations enregistrées dans ' + providerLabel);
         } else {
           const text = typeof message.error === 'string'
             ? message.error
-            : 'CyTask a refusé la sauvegarde';
-          setSaveStatus('Sauvegarde CyTask refusée');
+            : providerLabel + ' a refusé la sauvegarde';
+          setSaveStatus('Sauvegarde ' + providerLabel + ' refusée');
           showImportNotice(text);
         }
       }
     };
 
     window.addEventListener('message', receive);
-    opener.postMessage({ source: 'cyannota', type: 'ready', session }, parentOrigin);
+    opener.postMessage({
+      source: 'cyannota',
+      type: 'ready',
+      protocol: 'cyannota.integration',
+      protocolVersion: 1,
+      session,
+      capabilities: {
+        media: ['image', 'video'],
+        exportAudiences: ['ai', 'human'],
+        exportContainers: ['zip', 'project'],
+        projectExtension: '.cyannota',
+      },
+    }, parentOrigin);
     return () => window.removeEventListener('message', receive);
   }, []);
 
-  async function openCyTaskMedia(
-    message: CyTaskBridgeMessage,
+  useEffect(() => {
+    const desktop = window.cyAnnotaDesktop;
+    if (!desktop?.onOpenFiles) return;
+    return desktop.onOpenFiles((items) => {
+      void (async () => {
+        for (const item of items) {
+          const file = new File([item.bytes], item.name, {
+            type: item.type || 'application/octet-stream',
+            lastModified: Date.now(),
+          });
+          const lowerName = item.name.toLowerCase();
+          if (lowerName.endsWith('.cyannota') || lowerName.endsWith('.zip')) {
+            await openProjectFile(file);
+          } else if (item.type.startsWith('video/') || /\.(mp4|webm|ogg|mov|m4v)$/.test(lowerName)) {
+            loadVideoFile(file);
+          } else if (item.type.startsWith('image/') || /\.(png|jpe?g|webp)$/.test(lowerName)) {
+            await loadImageFile(file);
+          }
+        }
+      })().catch((error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        setSaveStatus('Ouverture externe impossible');
+        showImportNotice('CyAnnota ne peut pas ouvrir le fichier : ' + detail);
+      });
+    });
+  });
+
+  async function openIntegrationMedia(
+    message: IntegrationBridgeMessage,
     parentOrigin: string,
     session: string,
     attachmentId: string,
+    providerId: string,
+    providerLabel: string,
   ) {
-    if (!(message.file instanceof Blob)) throw new Error('Le fichier CyTask est absent.');
+    if (!(message.file instanceof Blob)) throw new Error('Le fichier transmis est absent.');
     if (message.mediaKind !== 'image' && message.mediaKind !== 'video') {
-      throw new Error('Le type de média CyTask est invalide.');
+      throw new Error('Le type de média transmis est invalide.');
     }
 
     const title = typeof message.title === 'string' && message.title.trim()
@@ -689,7 +745,9 @@ export default function Home() {
     const file = message.file instanceof File
       ? message.file
       : new File([message.file], title, { type: message.file.type });
-    const bridge: CyTaskBridge = {
+    const bridge: IntegrationBridge = {
+      providerId,
+      providerLabel,
       session,
       parentOrigin,
       attachmentId,
@@ -698,8 +756,17 @@ export default function Home() {
         ? message.maximumDocumentBytes
         : 4_194_304,
     };
-    cyTaskBridgeRef.current = bridge;
-    setCyTaskBridge(bridge);
+    integrationBridgeRef.current = bridge;
+    setIntegrationBridge(bridge);
+    if (message.exportAudience === 'ai' || message.exportAudience === 'human') {
+      setExportAudience(message.exportAudience);
+    }
+    if (message.exportContainer === 'zip' || message.exportContainer === 'project') {
+      setExportContainer(message.exportContainer);
+    }
+    if (typeof message.includeOriginalVideos === 'boolean') {
+      setIncludeOriginalVideosInExport(message.includeOriginalVideos);
+    }
 
     if (message.mediaKind === 'video') {
       const project = isRecord(message.document)
@@ -707,7 +774,7 @@ export default function Home() {
         : undefined;
       if (project && (project.version !== 1 || project.kind !== 'video'
         || !Array.isArray(project.annotations))) {
-        throw new Error('Le projet vidéo CyTask est invalide.');
+        throw new Error('Le projet vidéo transmis est invalide.');
       }
       loadVideoFile(file, project, true);
     } else {
@@ -717,7 +784,7 @@ export default function Home() {
         : createBlankProject();
       if (project.version !== 1 || !Array.isArray(project.layers)
         || !Array.isArray(project.annotations)) {
-        throw new Error('Le projet image CyTask est invalide.');
+        throw new Error('Le projet image transmis est invalide.');
       }
       project.title = project.title || title.replace(/.[^.]+$/, '');
       project.image = { src: dataUrl, name: title };
@@ -728,32 +795,32 @@ export default function Home() {
       setTool('select');
     }
 
-    setSaveStatus(bridge.readOnly ? 'Consultation CyTask' : 'Lié à CyTask · prêt');
+    setSaveStatus(bridge.readOnly ? 'Consultation ' + providerLabel : 'Lié à ' + providerLabel + ' · prêt');
     showImportNotice(
       bridge.readOnly
-        ? 'Média CyTask ouvert en consultation'
-        : 'Média CyTask prêt à annoter',
+        ? 'Média ' + providerLabel + ' ouvert en consultation'
+        : 'Média ' + providerLabel + ' prêt à annoter',
     );
   }
 
-  function sendCyTaskDocument(document: ProjectFile | VideoProjectData) {
-    const bridge = cyTaskBridgeRef.current;
+  function sendIntegrationDocument(document: ProjectFile | VideoProjectData) {
+    const bridge = integrationBridgeRef.current;
     if (!bridge || !window.opener) return false;
     if (bridge.readOnly) {
       setSaveStatus('Consultation seule');
-      showImportNotice('Votre rôle CyTask ne permet pas de modifier les annotations');
+      showImportNotice(bridge.providerLabel + ' ne permet pas de modifier les annotations');
       return false;
     }
 
     const clean = structuredClone(document);
     if (!('kind' in clean)) {
       clean.image = clean.image
-        ? { ...clean.image, src: 'cytask-attachment:' + bridge.attachmentId }
-        : { src: 'cytask-attachment:' + bridge.attachmentId, name: imageName };
+        ? { ...clean.image, src: bridge.providerId + '-attachment:' + bridge.attachmentId }
+        : { src: bridge.providerId + '-attachment:' + bridge.attachmentId, name: imageName };
     }
     const size = new Blob([JSON.stringify(clean)]).size;
     if (size > bridge.maximumDocumentBytes) {
-      setSaveStatus('Document CyTask trop volumineux');
+      setSaveStatus('Document ' + bridge.providerLabel + ' trop volumineux');
       showImportNotice('Réduisez les captures de référence avant de sauver');
       return false;
     }
@@ -761,11 +828,18 @@ export default function Home() {
     window.opener.postMessage({
       source: 'cyannota',
       type: 'save-annotations',
+      protocol: 'cyannota.integration',
+      protocolVersion: 1,
       session: bridge.session,
       attachmentId: bridge.attachmentId,
       document: clean,
+      exportPreferences: {
+        audience: exportAudience,
+        container: exportContainer,
+        includeOriginalVideos: includeOriginalVideosInExport,
+      },
     }, bridge.parentOrigin);
-    setSaveStatus('Enregistrement dans CyTask…');
+    setSaveStatus('Enregistrement dans ' + bridge.providerLabel + '…');
     return true;
   }
 
@@ -937,7 +1011,7 @@ export default function Home() {
   }, [annotations]);
 
   useEffect(() => {
-    if (!imageSource || cyTaskBridgeRef.current) return;
+    if (!imageSource || integrationBridgeRef.current) return;
     setSaveStatus('Enregistrement…');
     const timeout = window.setTimeout(() => {
       storeDraft(projectData())
@@ -1889,10 +1963,10 @@ export default function Home() {
     importNoticeTimer.current = window.setTimeout(() => setImportNotice(''), 2600);
   }
 
-  function loadVideoFile(file?: File, project?: VideoProjectData, fromCyTask = false) {
+  function loadVideoFile(file?: File, project?: VideoProjectData, fromIntegration = false) {
     if (!file) return false;
-    if (cyTaskBridgeRef.current && !fromCyTask) {
-      showImportNotice('Le média lié à CyTask ne peut pas être remplacé dans cette session');
+    if (integrationBridgeRef.current && !fromIntegration) {
+      showImportNotice('Le média lié à ' + integrationBridgeRef.current.providerLabel + ' ne peut pas être remplacé dans cette session');
       return false;
     }
     const extension = file.name.split('.').pop()?.toLowerCase();
@@ -1958,8 +2032,8 @@ export default function Home() {
   }
 
   async function loadImageFile(file?: File, source: 'file' | 'clipboard' = 'file') {
-    if (cyTaskBridgeRef.current) {
-      showImportNotice('Le média lié à CyTask ne peut pas être remplacé dans cette session');
+    if (integrationBridgeRef.current) {
+      showImportNotice('Le média lié à ' + integrationBridgeRef.current.providerLabel + ' ne peut pas être remplacé dans cette session');
       return false;
     }
     if (!file || !file.type.startsWith('image/')) return false;
@@ -2185,22 +2259,22 @@ export default function Home() {
   }
 
   async function saveProjectFile() {
-    if (cyTaskBridgeRef.current) {
-      sendCyTaskDocument(projectData());
+    if (integrationBridgeRef.current) {
+      sendIntegrationDocument(projectData());
       return;
     }
-    await downloadPackage(false);
+    await downloadPackage({ delivery: false, includePrompt: false, container: 'project' });
   }
 
   async function openProjectFile(file?: File) {
-    if (cyTaskBridgeRef.current) {
-      showImportNotice('Cette fenêtre est liée à un média CyTask');
+    if (integrationBridgeRef.current) {
+      showImportNotice('Cette fenêtre est liée à un média ' + integrationBridgeRef.current.providerLabel);
       return;
     }
     if (!file) return;
     try {
       let project: ProjectFile;
-      if (file.name.toLowerCase().endsWith('.zip') || file.type.includes('zip')) {
+      if (file.name.toLowerCase().endsWith('.zip') || file.name.toLowerCase().endsWith('.cyannota') || file.type.includes('zip') || file.type.includes('cyannota')) {
         const archive = await JSZip.loadAsync(file);
         const workspaceEntry =
           archive.file('workspace.cyannota.json') ||
@@ -2276,7 +2350,11 @@ export default function Home() {
           setTabs(restoredTabs);
           setActiveTabId(nextActive.id);
           if (nextActive.kind === 'image') applyProject(structuredClone(nextActive.project));
-          showImportNotice(restoredTabs.length + ' onglet(s) image/vidéo restauré(s) depuis le ZIP');
+          showImportNotice(
+            restoredTabs.length +
+              ' onglet(s) image/vidéo restauré(s) depuis ' +
+              (file.name.toLowerCase().endsWith('.cyannota') ? 'le projet CyAnnota' : 'le ZIP'),
+          );
           return;
         }
 
@@ -2335,7 +2413,9 @@ export default function Home() {
       if (activeTab?.kind === 'video' || imageSource) createTab(project, label);
       else applyProject(project);
       showImportNotice(
-        file.name.toLowerCase().endsWith('.zip')
+        file.name.toLowerCase().endsWith('.cyannota')
+          ? 'Projet .cyannota ouvert dans un onglet'
+          : file.name.toLowerCase().endsWith('.zip')
           ? 'ZIP CyAnnota ouvert dans un onglet'
           : 'Projet CyAnnota ouvert',
       );
@@ -2545,10 +2625,10 @@ export default function Home() {
     zip: JSZip,
     project: ProjectFile,
     folderPath: string,
-    prompt: string,
+    prompt?: string,
   ) {
     zip.file(folderPath + 'project.annota.json', JSON.stringify(project, null, 2));
-    zip.file(folderPath + 'prompt.md', prompt);
+    if (prompt) zip.file(folderPath + 'prompt.md', prompt);
 
     if (!project.image) return;
     zip.file(
@@ -2618,10 +2698,10 @@ export default function Home() {
     trimmedVideo: Blob,
     includeOriginal: boolean,
     folderPath: string,
-    prompt: string,
+    prompt?: string,
   ) {
     zip.file(folderPath + 'video-project.cyannota.json', JSON.stringify(project, null, 2));
-    zip.file(folderPath + 'prompt.md', prompt);
+    if (prompt) zip.file(folderPath + 'prompt.md', prompt);
     const trimmedPath = project.trimmedPath || project.sourcePath;
     zip.file(folderPath + trimmedPath, trimmedVideo, { compression: 'STORE' });
     if (includeOriginal) {
@@ -2672,7 +2752,82 @@ export default function Home() {
       );
     }
   }
-  async function downloadPackage(useEditedExportPrompt = true) {
+
+  async function createWorkspaceThumbnail(workspaceTabs: BoardTab[], currentActive?: BoardTab) {
+    const width = 640;
+    const height = 360;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Impossible de créer la miniature du projet.');
+    context.fillStyle = '#111210';
+    context.fillRect(0, 0, width, height);
+
+    let source: CanvasImageSource | null = null;
+    let sourceWidth = 0;
+    let sourceHeight = 0;
+    if (currentActive?.kind === 'image' && currentActive.project.image) {
+      const rendered = await renderProjectCanvas(currentActive.project);
+      source = rendered;
+      sourceWidth = rendered.width;
+      sourceHeight = rendered.height;
+    } else if (currentActive?.kind === 'video') {
+      const stop = currentActive.project.frameStops?.[0];
+      if (stop?.imageData) {
+        const image = new Image();
+        await new Promise<void>((resolve, reject) => {
+          image.onload = () => resolve();
+          image.onerror = () => reject(new Error('La miniature vidéo est illisible.'));
+          image.src = stop.imageData;
+        });
+        source = image;
+        sourceWidth = image.naturalWidth;
+        sourceHeight = image.naturalHeight;
+      }
+    }
+
+    const footerHeight = 56;
+    if (source && sourceWidth && sourceHeight) {
+      const scale = Math.min(width / sourceWidth, (height - footerHeight) / sourceHeight);
+      const drawWidth = sourceWidth * scale;
+      const drawHeight = sourceHeight * scale;
+      context.drawImage(source, (width - drawWidth) / 2, (height - footerHeight - drawHeight) / 2, drawWidth, drawHeight);
+    } else {
+      context.fillStyle = '#ff6554';
+      context.font = '800 58px Segoe UI';
+      context.textAlign = 'center';
+      context.fillText(currentActive?.kind === 'video' ? 'VIDÉO' : 'CYANNOTA', width / 2, 165);
+    }
+
+    context.fillStyle = '#1b1b19ee';
+    context.fillRect(0, height - footerHeight, width, footerHeight);
+    context.textAlign = 'left';
+    context.fillStyle = '#f1eee8';
+    context.font = '700 18px Segoe UI';
+    const title = (currentActive?.project.title || 'Projet CyAnnota').slice(0, 52);
+    context.fillText(title, 18, height - 28);
+    context.fillStyle = '#9b9891';
+    context.font = '600 11px Segoe UI';
+    context.fillText(workspaceTabs.length + ' onglet(s) · ' + (currentActive?.kind === 'video' ? 'vidéo' : 'image'), 18, height - 11);
+    context.textAlign = 'right';
+    context.fillStyle = '#ff8a78';
+    context.font = '800 12px Segoe UI';
+    context.fillText('CyAnnota', width - 18, height - 18);
+
+    return new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => blob ? resolve(blob) : reject(new Error('Impossible d’encoder la miniature du projet.')),
+        'image/png',
+      );
+    });
+  }
+
+  async function downloadPackage(options: {
+    delivery: boolean;
+    includePrompt: boolean;
+    container: ExportContainer;
+  }) {
     const workspaceTabs = saveActiveTab(tabs);
     const exportableTabs = workspaceTabs.filter(
       (tab) => tab.kind === 'video' || Boolean(tab.project.image),
@@ -2681,14 +2836,16 @@ export default function Home() {
     const currentActive = workspaceTabs.find((tab) => tab.id === activeTabId);
     const packageTitle =
       currentActive?.kind === 'video' ? currentActive.project.title : projectTitle;
-    const packageName = safeFileName(packageTitle || 'cyannota') + '.cyannota.zip';
+    const packageName =
+      safeFileName(packageTitle || 'cyannota') +
+      (options.container === 'project' ? '.cyannota' : '.cyannota.zip');
     const exportFolder = (tab: BoardTab, index: number) =>
       'onglets/' +
       String(index + 1).padStart(2, '0') +
       '-' +
       safeFileName(tab.label) +
       '/';
-    const isDeliveryExport = useEditedExportPrompt;
+    const isDeliveryExport = options.delivery;
     const includeOriginalVideos = !isDeliveryExport || includeOriginalVideosInExport;
     const packagedVideoProjects = new Map<string, VideoProjectData>();
     workspaceTabs.forEach((tab) => {
@@ -2738,15 +2895,58 @@ export default function Home() {
           2,
         ),
       );
+      const imageCount = exportableTabs.filter((tab) => tab.kind === 'image').length;
+      const videoCount = exportableTabs.length - imageCount;
+      const correctionCount = exportableTabs.reduce(
+        (count, tab) =>
+          count +
+          tab.project.annotations.length +
+          (tab.kind === 'video'
+            ? (tab.project.frameStops || []).reduce(
+                (stopCount, stop) => stopCount + (stop.annotations || []).length,
+                0,
+              )
+            : 0),
+        0,
+      );
+      const thumbnail = await createWorkspaceThumbnail(workspaceTabs, currentActive);
+      zip.file('thumbnail.png', thumbnail);
+      zip.file(
+        'manifest.cyannota.json',
+        JSON.stringify(
+          {
+            format: 'cyannota-project',
+            formatVersion: 1,
+            title: packageTitle || 'CyAnnota',
+            updatedAt: new Date().toISOString(),
+            container: options.container,
+            audience: options.includePrompt ? 'ai' : 'human',
+            workspace: 'workspace.cyannota.json',
+            thumbnail: 'thumbnail.png',
+            activeTabId,
+            tabCount: exportableTabs.length,
+            imageCount,
+            videoCount,
+            correctionCount,
+            sourceApplication: 'CyAnnota',
+          },
+          null,
+          2,
+        ),
+      );
       zip.file(
         'LISEZ-MOI.txt',
-        'Archive CyAnnota contenant ' +
+        (options.container === 'project' ? 'Projet' : 'Archive') +
+          ' CyAnnota contenant ' +
           exportableTabs.length +
           ' onglet(s) image/vidéo. ' +
+          (options.includePrompt
+            ? 'Mode IA : les prompts de correction sont inclus. '
+            : 'Mode Humain : aucun prompt n’est inclus. ') +
           (isDeliveryExport
             ? 'Les vidéos sont découpées et réencodées. Les sources originales sont ' + (includeOriginalVideos ? 'également incluses.' : 'omises pour alléger le paquet.')
             : 'La sauvegarde contient les vidéos sources ainsi que leurs versions découpées et réencodées.') +
-          ' Ouvrez directement ce ZIP dans CyAnnota pour restaurer l’espace de travail.',
+          ' Ouvrez directement ce fichier dans CyAnnota pour restaurer l’espace de travail.',
       );
 
       let videoIndex = 0;
@@ -2758,9 +2958,11 @@ export default function Home() {
           if (tab.kind === 'video') {
             const packagedProject = packagedVideoProjects.get(tab.id);
             if (!packagedProject) throw new Error('Projet vidéo préparé introuvable.');
-            const generatedPrompt = buildVideoPrompt(packagedProject);
+            const generatedPrompt = options.includePrompt
+              ? buildVideoPrompt(packagedProject)
+              : undefined;
             const prompt =
-              useEditedExportPrompt && tab.id === activeTabId && exportPrompt
+              options.includePrompt && options.delivery && tab.id === activeTabId && exportPrompt
                 ? exportPrompt
                 : generatedPrompt;
             const trimmedVideo = await encodeVideoTabForPackage(tab, videoIndex, totalVideos);
@@ -2775,9 +2977,11 @@ export default function Home() {
               prompt,
             );
           } else {
-            const generatedPrompt = buildPrompt(tab.project);
+            const generatedPrompt = options.includePrompt
+              ? buildPrompt(tab.project)
+              : undefined;
             const prompt =
-              useEditedExportPrompt && tab.id === activeTabId && exportPrompt
+              options.includePrompt && options.delivery && tab.id === activeTabId && exportPrompt
                 ? exportPrompt
                 : generatedPrompt;
             await addProjectToZip(zip, tab.project, folder, prompt);
@@ -2787,31 +2991,33 @@ export default function Home() {
           throw new Error('Onglet « ' + tab.label + ' » : ' + detail);
         }
       }
-      setExportProgressLabel('Compression du ZIP…');
+      const containerLabel = options.container === 'project' ? 'projet CyAnnota' : 'ZIP';
+      setExportProgressLabel('Compression du ' + containerLabel + '…');
       const archive = await zip.generateAsync(
         {
           type: 'blob',
+          mimeType: options.container === 'project' ? 'application/x-cyannota' : 'application/zip',
           compression: 'DEFLATE',
           compressionOptions: { level: 6 },
         },
-        (metadata) => setExportProgressLabel('Compression du ZIP · ' + Math.round(metadata.percent) + '%'),
+        (metadata) => setExportProgressLabel('Compression du ' + containerLabel + ' · ' + Math.round(metadata.percent) + '%'),
       );
       const saved = await savePreparedBlob(archive, preparedSave);
       setSaveStatus(
         saved
-          ? useEditedExportPrompt
-            ? 'Export ZIP léger enregistré'
-            : 'Espace de travail enregistré avec les sources'
+          ? options.delivery
+            ? 'Export ' + (options.includePrompt ? 'IA' : 'Humain') + ' enregistré'
+            : 'Projet CyAnnota enregistré avec les sources'
           : 'Enregistrement annulé',
       );
       setExportProgressLabel(saved ? 'Paquet enregistré' : 'Enregistrement annulé');
       return saved;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'erreur inconnue';
-      setSaveStatus('Échec de l’enregistrement ZIP');
+      setSaveStatus('Échec de l’enregistrement CyAnnota');
       setExportProgressLabel('Encodage ou export impossible');
       showImportNotice('Enregistrement impossible : ' + message);
-      await showSaveFailure('Impossible d’enregistrer le fichier ZIP.', error);
+      await showSaveFailure('Impossible d’enregistrer le fichier CyAnnota.', error);
       throw error;
     } finally {
       setIsExporting(false);
@@ -2847,8 +3053,8 @@ export default function Home() {
           <header className="modal-header">
             <div>
               <p className="eyebrow">PAQUET DE CORRECTIONS COMPLET</p>
-              <h2>Images et vidéos prêtes à envoyer</h2>
-              <p>Les vidéos sont découpées puis réencodées localement. Par défaut, l’export omet les vidéos originales afin de rester léger.</p>
+              <h2>{exportAudience === 'human' ? 'Dossier prêt pour une personne' : 'Images et vidéos prêtes pour une IA'}</h2>
+              <p>{exportAudience === 'human' ? 'Le paquet contient les médias, les annotations et la miniature, sans aucun prompt.' : 'Le paquet contient aussi les prompts structurés pour transmettre les corrections à une IA.'}</p>
             </div>
             <button className="modal-close" aria-label="Fermer" onClick={() => setExportOpen(false)}>×</button>
           </header>
@@ -2860,10 +3066,53 @@ export default function Home() {
             <div><strong>{frameStopCount}</strong><span>arrêts image</span></div>
           </div>
 
-          <label className="prompt-editor">
-            <span>Prompt de l’onglet actif — tu peux encore le modifier</span>
-            <textarea value={exportPrompt} onChange={(event) => setExportPrompt(event.target.value)} />
-          </label>
+          <div className="export-mode-grid" aria-label="Options d’export">
+            <fieldset className="export-choice-group">
+              <legend>Destinataire</legend>
+              <button
+                type="button"
+                className={exportAudience === 'human' ? 'export-choice active' : 'export-choice'}
+                onClick={() => setExportAudience('human')}
+                disabled={isExporting}
+              >
+                <strong>Humain</strong><small>Médias et annotations, sans prompt</small>
+              </button>
+              <button
+                type="button"
+                className={exportAudience === 'ai' ? 'export-choice active' : 'export-choice'}
+                onClick={() => setExportAudience('ai')}
+                disabled={isExporting}
+              >
+                <strong>IA</strong><small>Ajoute les prompts structurés</small>
+              </button>
+            </fieldset>
+            <fieldset className="export-choice-group">
+              <legend>Format</legend>
+              <button
+                type="button"
+                className={exportContainer === 'project' ? 'export-choice active' : 'export-choice'}
+                onClick={() => setExportContainer('project')}
+                disabled={isExporting}
+              >
+                <strong>Projet .cyannota</strong><small>Reconnu par CyTask et le bureau</small>
+              </button>
+              <button
+                type="button"
+                className={exportContainer === 'zip' ? 'export-choice active' : 'export-choice'}
+                onClick={() => setExportContainer('zip')}
+                disabled={isExporting}
+              >
+                <strong>Archive ZIP</strong><small>Compatible avec le flux actuel</small>
+              </button>
+            </fieldset>
+          </div>
+
+          {exportAudience === 'ai' && (
+            <label className="prompt-editor">
+              <span>Prompt de l’onglet actif — tu peux encore le modifier</span>
+              <textarea value={exportPrompt} onChange={(event) => setExportPrompt(event.target.value)} />
+            </label>
+          )}
 
           {videoCount > 0 && (
             <label className="export-original-option">
@@ -2891,16 +3140,24 @@ export default function Home() {
           {isExporting && <div className="export-encoding-status"><span className="status-dot" /><strong>{exportProgressLabel || 'Encodage local en cours…'}</strong></div>}
 
           <footer className="modal-actions">
-            <button className="button ghost" onClick={() => copyPrompt().catch(() => undefined)}>Copier le prompt</button>
+            {exportAudience === 'ai' && (
+              <button className="button ghost" onClick={() => copyPrompt().catch(() => undefined)}>Copier le prompt</button>
+            )}
             {activeTab?.kind === 'image' && activeTab.project.image && (
               <button className="button ghost" onClick={() => downloadAnnotatedImage().catch(() => undefined)}>Image annotée</button>
             )}
             <button
               className="button primary large"
-              onClick={() => downloadPackage(true).catch(() => undefined)}
+              onClick={() => downloadPackage({
+                delivery: true,
+                includePrompt: exportAudience === 'ai',
+                container: exportContainer,
+              }).catch(() => undefined)}
               disabled={isExporting}
             >
-              {isExporting ? 'Encodage et création du ZIP…' : 'Exporter le paquet léger'}
+              {isExporting
+                ? 'Encodage et création en cours…'
+                : 'Exporter · ' + (exportAudience === 'human' ? 'Humain' : 'IA') + ' · ' + (exportContainer === 'project' ? '.cyannota' : 'ZIP')}
             </button>
           </footer>
         </section>
@@ -2959,7 +3216,7 @@ export default function Home() {
             </div>
           ))}
         </div>
-        {!cyTaskBridge && (
+        {!integrationBridge && (
           <button
             className="new-board-tab"
             aria-label="Nouvel onglet d’image"
@@ -2988,11 +3245,11 @@ export default function Home() {
             openVideoFrameAsImage(captureFile, time, activeTab.project.title)
           }
           tabBar={renderMediaTabs()}
-          onOpenWorkspace={cyTaskBridge ? undefined : () => projectInputRef.current?.click()}
-          onAddImage={cyTaskBridge ? undefined : () => imageInputRef.current?.click()}
-          onAddVideo={cyTaskBridge ? undefined : () => videoInputRef.current?.click()}
+          onOpenWorkspace={integrationBridge ? undefined : () => projectInputRef.current?.click()}
+          onAddImage={integrationBridge ? undefined : () => imageInputRef.current?.click()}
+          onAddVideo={integrationBridge ? undefined : () => videoInputRef.current?.click()}
           onSaveWorkspace={() => {
-            if (cyTaskBridge) sendCyTaskDocument(activeTab.project);
+            if (integrationBridge) sendIntegrationDocument(activeTab.project);
             else saveProjectFile().catch(() => undefined);
           }}
           onExportWorkspace={openExport}
@@ -3001,7 +3258,7 @@ export default function Home() {
           ref={projectInputRef}
           hidden
           type="file"
-          accept=".json,.annota.json,.zip,application/json,application/zip"
+          accept=".cyannota,.json,.annota.json,.zip,application/x-cyannota,application/json,application/zip"
           onChange={(event: ChangeEvent<HTMLInputElement>) => {
             openProjectFile(event.target.files?.[0]).catch(() => undefined);
             event.target.value = '';
@@ -3058,12 +3315,12 @@ export default function Home() {
               Reprendre
             </button>
           )}
-          {cyTaskBridge && (
+          {integrationBridge && (
             <span className="cytask-bridge-badge">
-              {cyTaskBridge.readOnly ? 'CyTask · consultation' : 'CyTask · lié'}
+              {integrationBridge.providerLabel + (integrationBridge.readOnly ? ' · consultation' : ' · lié')}
             </span>
           )}
-          {!cyTaskBridge && (
+          {!integrationBridge && (
             <>
               <button className="button ghost compact" onClick={() => projectInputRef.current?.click()}>
                 Ouvrir
@@ -3078,7 +3335,7 @@ export default function Home() {
             onClick={() => saveProjectFile().catch(() => undefined)}
             disabled={!hasExportableMedia || isExporting}
           >
-            {cyTaskBridge ? 'Sauver dans CyTask' : 'Sauver'}
+            {integrationBridge ? 'Sauver dans ' + integrationBridge.providerLabel : 'Sauver'}
           </button>
           <button className="button primary" onClick={openExport} disabled={!hasExportableMedia}>
             Exporter
@@ -3089,7 +3346,7 @@ export default function Home() {
           ref={projectInputRef}
           hidden
           type="file"
-          accept=".json,.annota.json,.zip,application/json,application/zip"
+          accept=".cyannota,.json,.annota.json,.zip,application/x-cyannota,application/json,application/zip"
           onChange={(event: ChangeEvent<HTMLInputElement>) => {
             openProjectFile(event.target.files?.[0]).catch(() => undefined);
             event.target.value = '';

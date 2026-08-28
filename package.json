@@ -16,7 +16,7 @@
     "desktop:dev": "node desktop/scripts/dev.mjs",
     "desktop:renderer:build": "vite build --config desktop/vite.config.ts",
     "desktop:pack": "npm run desktop:renderer:build && electron-builder --projectDir desktop --config ../electron-builder.yml --dir",
-    "desktop:build": "npm run desktop:renderer:build && electron-builder --projectDir desktop --config ../electron-builder.yml --win portable"
+    "desktop:build": "npm run desktop:renderer:build && electron-builder --projectDir desktop --config ../electron-builder.yml --win portable nsis"
   },
   "dependencies": {
     "@ffmpeg/core": "^0.12.10",

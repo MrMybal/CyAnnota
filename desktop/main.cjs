@@ -28,6 +28,94 @@ if (!hasSingleInstanceLock) {
 let mainWindow = null;
 let lastSaveDirectory = null;
 const pendingSavePaths = new Map();
+const pendingOpenPaths = [];
+const SUPPORTED_OPEN_EXTENSIONS = new Set([
+  '.cyannota', '.zip',
+  '.png', '.jpg', '.jpeg', '.webp',
+  '.mp4', '.webm', '.ogg', '.mov', '.m4v',
+]);
+
+function mediaTypeForPath(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  return {
+    '.cyannota': 'application/x-cyannota',
+    '.zip': 'application/zip',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.ogg': 'video/ogg',
+    '.mov': 'video/quicktime',
+    '.m4v': 'video/x-m4v',
+  }[extension] || 'application/octet-stream';
+}
+
+function launchPathFromArgument(argument) {
+  if (typeof argument !== 'string' || !argument.trim()) return null;
+  if (argument.startsWith(DESKTOP_ORIGIN)) return null;
+  if (argument.toLowerCase().startsWith(DESKTOP_SCHEME + '://')) {
+    try {
+      const url = new URL(argument);
+      if (url.host !== 'open') return null;
+      const requestedPath = url.searchParams.get('path');
+      return requestedPath && path.isAbsolute(requestedPath) ? path.normalize(requestedPath) : null;
+    } catch {
+      return null;
+    }
+  }
+  return path.isAbsolute(argument) ? path.normalize(argument) : null;
+}
+
+async function supportedLaunchPaths(argumentsList) {
+  const candidates = argumentsList
+    .map(launchPathFromArgument)
+    .filter(Boolean)
+    .filter((filePath) => SUPPORTED_OPEN_EXTENSIONS.has(path.extname(filePath).toLowerCase()));
+  const unique = [...new Set(candidates)];
+  const valid = [];
+  for (const filePath of unique) {
+    try {
+      if ((await fs.stat(filePath)).isFile()) valid.push(filePath);
+    } catch {
+      // Une intégration peut fournir un chemin supprimé entre la capture et l’ouverture.
+    }
+  }
+  return valid;
+}
+
+async function sendOpenPaths(filePaths) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) {
+    pendingOpenPaths.push(...filePaths);
+    return;
+  }
+  const items = [];
+  for (const filePath of filePaths) {
+    try {
+      const content = await fs.readFile(filePath);
+      items.push({
+        name: path.basename(filePath),
+        type: mediaTypeForPath(filePath),
+        bytes: content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength),
+      });
+    } catch (error) {
+      console.warn('Impossible d’ouvrir le fichier transmis à CyAnnota', filePath, error);
+    }
+  }
+  if (items.length) mainWindow.webContents.send('cyannota:open-files', items);
+}
+
+async function queueLaunchArguments(argumentsList) {
+  const filePaths = await supportedLaunchPaths(argumentsList);
+  if (filePaths.length) await sendOpenPaths(filePaths);
+}
+
+async function flushPendingOpenPaths() {
+  if (!pendingOpenPaths.length) return;
+  const filePaths = [...new Set(pendingOpenPaths.splice(0))];
+  await sendOpenPaths(filePaths);
+}
 
 function preferencesFilePath() {
   return path.join(app.getPath('userData'), 'desktop-preferences.json');
@@ -99,7 +187,9 @@ function saveDialogOptions(name) {
       : 'cyannota-espace-de-travail.zip';
   const extension = path.extname(suggestedName).toLowerCase();
   const filters =
-    extension === '.zip'
+    extension === '.cyannota'
+      ? [{ name: 'Projet CyAnnota', extensions: ['cyannota'] }]
+      : extension === '.zip'
       ? [{ name: 'Archive CyAnnota', extensions: ['zip'] }]
       : extension === '.png'
         ? [{ name: 'Image PNG', extensions: ['png'] }]
@@ -320,6 +410,11 @@ function createMainWindow() {
       : DESKTOP_ORIGIN + '/index.html';
 
   window.once('ready-to-show', () => window.show());
+  window.webContents.on('did-finish-load', () => {
+    flushPendingOpenPaths().catch((error) => {
+      console.warn('Impossible de transmettre les fichiers en attente', error);
+    });
+  });
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) {
       shell.openExternal(url).catch(() => undefined);
@@ -344,6 +439,7 @@ function createMainWindow() {
 
 app.whenReady().then(async () => {
   app.setAppUserModelId('com.cyberalien.cyannota');
+  if (app.isPackaged) app.setAsDefaultProtocolClient(DESKTOP_SCHEME);
   await loadDesktopPreferences();
 
   if (app.isPackaged) {
@@ -357,6 +453,7 @@ app.whenReady().then(async () => {
   });
 
   mainWindow = createMainWindow();
+  await queueLaunchArguments(process.argv.slice(1));
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -365,11 +462,28 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on('second-instance', () => {
+app.on('second-instance', (_event, commandLine) => {
+  queueLaunchArguments(commandLine).catch((error) => {
+    console.warn('Impossible de traiter la demande d’ouverture', error);
+  });
   if (!mainWindow) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+});
+
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  queueLaunchArguments([filePath]).catch((error) => {
+    console.warn('Impossible de traiter le fichier macOS', error);
+  });
+});
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  queueLaunchArguments([url]).catch((error) => {
+    console.warn('Impossible de traiter le lien CyAnnota', error);
+  });
 });
 
 app.on('window-all-closed', () => {
