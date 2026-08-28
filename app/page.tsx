@@ -28,7 +28,7 @@ import {
   useState,
 } from 'react';
 
-type Tool = 'select' | 'pan' | 'frame' | 'shape' | 'rect' | 'arrow' | 'text' | 'draw' | 'cut' | 'polycut' | 'delete' | 'eyedropper';
+type Tool = 'select' | 'pan' | 'frame' | 'shape' | 'rect' | 'arrow' | 'text' | 'draw' | 'cut' | 'resize' | 'polycut' | 'delete' | 'eyedropper';
 type Category = 'modifier' | 'ajouter' | 'supprimer' | 'deplacer' | 'question';
 type Point = { x: number; y: number };
 type Layer = { id: string; name: string; color: string; visible: boolean };
@@ -84,6 +84,20 @@ type CutAnnotation = AnnotationBase & {
   polygon?: Point[];
 };
 
+
+type ResizeAnnotation = AnnotationBase & {
+  type: 'resize';
+  sourceX: number;
+  sourceY: number;
+  sourceW: number;
+  sourceH: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  imageData: string;
+  lockAspectRatio: boolean;
+};
 type FrameAnnotation = AnnotationBase & {
   type: 'frame';
   x: number;
@@ -124,6 +138,7 @@ type Annotation =
   | TextAnnotation
   | DrawAnnotation
   | CutAnnotation
+  | ResizeAnnotation
   | FrameAnnotation
   | ShapeAnnotation
   | DeleteAnnotation
@@ -139,6 +154,7 @@ type Draft = {
 type DragState =
   | { kind: 'create'; draft: Draft }
   | { kind: 'move'; id: string; start: Point; original: Annotation; before: Annotation[] }
+  | { kind: 'resize'; id: string; start: Point; original: ResizeAnnotation; before: Annotation[] }
   | {
       kind: 'pan';
       clientX: number;
@@ -225,16 +241,48 @@ function createBlankProject(locale: AppLocale = DEFAULT_LOCALE): ProjectFile {
   };
 }
 
+
+const LEGACY_EMPTY_FRAME_MESSAGES = new Set([
+  'Every item placed inside this frame belongs to the same correction.',
+  'Tous les éléments placés dans ce cadre font partie de la même correction.',
+]);
+
+function hasFrameInstruction(description: string) {
+  const message = description.trim();
+  return Boolean(message) && !LEGACY_EMPTY_FRAME_MESSAGES.has(message);
+}
+
+function createImageDeliveryProject(project: ProjectFile): ProjectFile {
+  const ignoredFrameIds = new Set(
+    project.annotations
+      .filter((annotation) => annotation.type === 'frame' && !hasFrameInstruction(annotation.description))
+      .map((annotation) => annotation.id),
+  );
+
+  if (!ignoredFrameIds.size) return project;
+
+  return {
+    ...project,
+    annotations: project.annotations
+      .filter((annotation) => !ignoredFrameIds.has(annotation.id))
+      .map((annotation) =>
+        annotation.groupId && ignoredFrameIds.has(annotation.groupId)
+          ? { ...annotation, groupId: undefined }
+          : annotation,
+      ),
+  };
+}
+
 const TOOL_LABELS: Record<AppLocale, Record<Tool, string>> = {
   en: {
     select: 'Select and move', pan: 'Hand — move view', frame: 'Group frame', shape: 'Simple shape',
     rect: 'Frame an area', arrow: 'Draw an arrow', text: 'Place a note', draw: 'Freehand draw',
-    cut: 'Rectangular cutout', polycut: 'Polygonal cutout', delete: 'Delete area', eyedropper: 'Color picker',
+    cut: 'Rectangular cutout', resize: 'Resize a captured area', polycut: 'Polygonal cutout', delete: 'Delete area', eyedropper: 'Color picker',
   },
   fr: {
     select: 'Sélectionner et déplacer', pan: 'Main — déplacer la vue', frame: 'Cadre de groupe', shape: 'Forme simple',
     rect: 'Encadrer une zone', arrow: 'Tracer une flèche', text: 'Placer une note', draw: 'Dessiner librement',
-    cut: 'Découpe rectangulaire', polycut: 'Découpe polygonale', delete: 'Zone à supprimer', eyedropper: 'Pipette de couleur',
+    cut: 'Découpe rectangulaire', resize: 'Redimensionner une zone', polycut: 'Découpe polygonale', delete: 'Zone à supprimer', eyedropper: 'Pipette de couleur',
   },
 };
 
@@ -243,7 +291,7 @@ const TOOL_HELP: Record<AppLocale, Record<Tool, string>> = {
     select: 'Click a correction or cutout to move it.', pan: 'Drag the image. Shortcuts: right-click or Space + drag.',
     frame: 'Create a frame; shapes and text placed inside will be linked to it.', shape: 'Draw a simple shape, then choose rectangle, ellipse, or line.',
     rect: 'Drag around the area to correct.', arrow: 'Drag from the starting point to the target.', text: 'Click where you want to place a note.',
-    draw: 'Hold and draw directly on the capture.', cut: 'Drag around an element, then move the created cutout.',
+    draw: 'Hold and draw directly on the capture.', cut: 'Drag around an element, then move the created cutout.', resize: 'Frame an area, then resize the extracted pixels with the handle or size controls.',
     polycut: 'Click the vertices, then double-click or click the first point to close.', delete: 'Frame an area to mark it automatically for deletion.',
     eyedropper: 'Pick a color, then choose its replacement.',
   },
@@ -251,7 +299,7 @@ const TOOL_HELP: Record<AppLocale, Record<Tool, string>> = {
     select: 'Clique une correction ou une découpe pour la déplacer.', pan: 'Fais glisser l’image. Raccourcis : clic droit ou Espace + glisser.',
     frame: 'Crée un cadre ; les formes et textes posés dedans lui seront liés.', shape: 'Dessine une forme simple, puis choisis rectangle, ellipse ou ligne.',
     rect: 'Glisse autour de la zone à corriger.', arrow: 'Glisse du point de départ vers la cible.', text: 'Clique à l’endroit où placer une note.',
-    draw: 'Maintiens et dessine directement sur la capture.', cut: 'Glisse autour d’un élément, puis déplace la découpe créée.',
+    draw: 'Maintiens et dessine directement sur la capture.', cut: 'Glisse autour d’un élément, puis déplace la découpe créée.', resize: 'Encadre une zone, puis redimensionne les pixels extraits avec la poignée ou les contrôles de taille.',
     polycut: 'Clique les sommets puis double-clique ou clique le premier point pour fermer.', delete: 'Encadre une zone : elle sera automatiquement marquée à supprimer.',
     eyedropper: 'Clique une couleur, puis choisis la couleur de remplacement.',
   },
@@ -263,8 +311,8 @@ const CATEGORY_LABELS: Record<AppLocale, Record<Category, string>> = {
 };
 
 const TYPE_LABELS: Record<AppLocale, Record<Annotation['type'], string>> = {
-  en: { rect: 'Area', arrow: 'Arrow', text: 'Note', draw: 'Drawing', cut: 'Moved cutout', frame: 'Group frame', shape: 'Shape', delete: 'Deleted area', color: 'Color' },
-  fr: { rect: 'Zone', arrow: 'Flèche', text: 'Note', draw: 'Dessin', cut: 'Découpe déplacée', frame: 'Cadre de groupe', shape: 'Forme', delete: 'Zone supprimée', color: 'Couleur' },
+  en: { rect: 'Area', arrow: 'Arrow', text: 'Note', draw: 'Drawing', cut: 'Moved cutout', resize: 'Resized cutout', frame: 'Group frame', shape: 'Shape', delete: 'Deleted area', color: 'Color' },
+  fr: { rect: 'Zone', arrow: 'Flèche', text: 'Note', draw: 'Dessin', cut: 'Découpe déplacée', resize: 'Découpe redimensionnée', frame: 'Cadre de groupe', shape: 'Forme', delete: 'Zone supprimée', color: 'Couleur' },
 };
 
 function createId() {
@@ -296,6 +344,7 @@ function annotationBounds(annotation: Annotation) {
     annotation.type === 'cut' ||
     annotation.type === 'frame' ||
     annotation.type === 'shape' ||
+    annotation.type === 'resize' ||
     annotation.type === 'delete'
   ) {
     return { x: annotation.x, y: annotation.y, w: annotation.w, h: annotation.h };
@@ -337,6 +386,7 @@ function moveAnnotation(annotation: Annotation, dx: number, dy: number): Annotat
     annotation.type === 'cut' ||
     annotation.type === 'text' ||
     annotation.type === 'frame' ||
+    annotation.type === 'resize' ||
     annotation.type === 'shape' ||
     annotation.type === 'delete' ||
     annotation.type === 'color'
@@ -572,6 +622,8 @@ export default function Home() {
   const [future, setFuture] = useState<Annotation[][]>([]);
   const [projectTitle, setProjectTitle] = useState('Interface corrections');
   const [globalInstructions, setGlobalInstructions] = useState('');
+  const [workspaceInstructions, setWorkspaceInstructions] = useState('');
+  const [workspaceMessageOpen, setWorkspaceMessageOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportPrompt, setExportPrompt] = useState('');
   const [exportAudience, setExportAudience] = useState<ExportAudience>('ai');
@@ -599,6 +651,7 @@ export default function Home() {
   const videoInputRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const annotationsRef = useRef<Annotation[]>(annotations);
+  const globalInstructionsRef = useRef(globalInstructions);
   const cutImageCache = useRef<Map<string, HTMLImageElement>>(new Map());
   const colorSampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const importNoticeTimer = useRef<number | null>(null);
@@ -876,14 +929,30 @@ export default function Home() {
     return true;
   }
 
+  function persistActiveImageTab(
+    patch: Partial<Pick<ProjectFile, 'globalInstructions' | 'annotations'>>,
+  ) {
+    setTabs((items) => items.map((tab) =>
+      tab.id === activeTabId && tab.kind === 'image'
+        ? { ...tab, project: { ...tab.project, ...patch } }
+        : tab,
+    ));
+  }
+
+  function updateGlobalInstructions(value: string) {
+    globalInstructionsRef.current = value;
+    setGlobalInstructions(value);
+    persistActiveImageTab({ globalInstructions: value });
+  }
+
   function projectData(): ProjectFile {
     return {
       version: 1,
       title: projectTitle,
-      globalInstructions,
+      globalInstructions: globalInstructionsRef.current,
       image: imageSource ? { src: imageSource, name: imageName } : null,
       layers,
-      annotations,
+      annotations: annotationsRef.current,
     };
   }
 
@@ -920,10 +989,12 @@ export default function Home() {
       throw new Error('Format de projet CyAnnota invalide');
     }
     setProjectTitle(project.title || t('Interface corrections', 'Corrections interface'));
-    setGlobalInstructions(project.globalInstructions || '');
+    globalInstructionsRef.current = project.globalInstructions || '';
+    setGlobalInstructions(globalInstructionsRef.current);
     setLayers(project.layers.length ? project.layers : initialLayers(locale));
     setActiveLayerId(project.layers[0]?.id || 'ui');
     setAnnotations(project.annotations);
+    annotationsRef.current = project.annotations;
     setImageSource(project.image?.src || null);
     setImageName(project.image?.name || t('No capture', 'Aucune capture'));
     setSelectedId(null);
@@ -933,8 +1004,10 @@ export default function Home() {
     cutImageCache.current.clear();
   }
 
-  function saveActiveTab(items: BoardTab[]) {
-    const snapshot = structuredClone(projectData());
+  function saveActiveTab(
+    items: BoardTab[],
+    snapshot: ProjectFile = structuredClone(projectData()),
+  ) {
     return items.map((tab) =>
       tab.id === activeTabId && tab.kind === 'image'
         ? {
@@ -948,9 +1021,11 @@ export default function Home() {
 
   function activateTab(tabId: string) {
     if (tabId === activeTabId) return;
-    const target = tabs.find((tab) => tab.id === tabId);
+    const snapshot = structuredClone(projectData());
+    const nextTabs = saveActiveTab(tabs, snapshot);
+    const target = nextTabs.find((tab) => tab.id === tabId);
     if (!target) return;
-    setTabs((items) => saveActiveTab(items));
+    setTabs(nextTabs);
     setActiveTabId(tabId);
     if (target.kind === 'image') {
       applyProject(structuredClone(target.project));
@@ -960,13 +1035,14 @@ export default function Home() {
 
   function createTab(project: ProjectFile = createBlankProject(locale), label = t('New image', 'Nouvelle image')) {
     const id = createId();
+    const snapshot = structuredClone(projectData());
     const nextTab: ImageBoardTab = {
       id,
       label,
       kind: 'image',
       project: structuredClone(project),
     };
-    setTabs((items) => [...saveActiveTab(items), nextTab]);
+    setTabs([...saveActiveTab(tabs, snapshot), nextTab]);
     setActiveTabId(id);
     applyProject(structuredClone(project));
     setTool('select');
@@ -997,18 +1073,28 @@ export default function Home() {
   }
 
   useEffect(() => {
-    const snapshot = projectData();
-    setTabs((items) =>
-      items.map((tab) =>
-        tab.id === activeTabId && tab.kind === 'image'
-          ? {
-              ...tab,
-              label: snapshot.image?.name || snapshot.title || t('New image', 'Nouvelle image'),
-              project: snapshot,
-            }
-          : tab,
-      ),
-    );
+    const snapshot: ProjectFile = {
+      version: 1,
+      title: projectTitle,
+      globalInstructions,
+      image: imageSource ? { src: imageSource, name: imageName } : null,
+      layers,
+      annotations,
+    };
+    const syncFrame = window.requestAnimationFrame(() => {
+      setTabs((items) =>
+        items.map((tab) =>
+          tab.id === activeTabId && tab.kind === 'image'
+            ? {
+                ...tab,
+                label: snapshot.image?.name || snapshot.title || (locale === 'fr' ? 'Nouvelle image' : 'New image'),
+                project: snapshot,
+              }
+            : tab,
+        ),
+      );
+    });
+    return () => window.cancelAnimationFrame(syncFrame);
   }, [
     activeTabId,
     imageSource,
@@ -1017,6 +1103,7 @@ export default function Home() {
     annotations,
     projectTitle,
     globalInstructions,
+    locale,
   ]);
 
   useEffect(() => {
@@ -1026,8 +1113,8 @@ export default function Home() {
   useEffect(() => {
     if (!imageSource) {
       imageRef.current = null;
-      setImageSize({ width: 0, height: 0 });
-      return;
+      const resetFrame = window.requestAnimationFrame(() => setImageSize({ width: 0, height: 0 }));
+      return () => window.cancelAnimationFrame(resetFrame);
     }
     const image = new Image();
     image.onload = () => {
@@ -1061,7 +1148,7 @@ export default function Home() {
 
   useEffect(() => {
     for (const annotation of annotations) {
-      if (annotation.type !== 'cut' || cutImageCache.current.has(annotation.id)) continue;
+      if ((annotation.type !== 'cut' && annotation.type !== 'resize') || cutImageCache.current.has(annotation.id)) continue;
       const cutImage = new Image();
       cutImage.onload = () => {
         cutImageCache.current.set(annotation.id, cutImage);
@@ -1320,20 +1407,26 @@ export default function Home() {
       context.strokeRect(newX, swatchY - 9 * unit, 18 * unit, 18 * unit);
     }
 
-    if (annotation.type === 'cut') {
+    if (annotation.type === 'cut' || annotation.type === 'resize') {
+      const sourceW = annotation.type === 'resize' ? annotation.sourceW : annotation.w;
+      const sourceH = annotation.type === 'resize' ? annotation.sourceH : annotation.h;
       const moved = Math.abs(annotation.x - annotation.sourceX) > 1 || Math.abs(annotation.y - annotation.sourceY) > 1;
-      const destinationPolygon = annotation.polygon?.map((point) => ({
-        x: annotation.x + point.x - annotation.sourceX,
-        y: annotation.y + point.y - annotation.sourceY,
-      }));
+      const resized = annotation.type === 'resize' &&
+        (Math.abs(annotation.w - annotation.sourceW) > 1 || Math.abs(annotation.h - annotation.sourceH) > 1);
+      const destinationPolygon = annotation.type === 'cut'
+        ? annotation.polygon?.map((point) => ({
+            x: annotation.x + point.x - annotation.sourceX,
+            y: annotation.y + point.y - annotation.sourceY,
+          }))
+        : undefined;
 
-      if (moved) {
+      if (moved || resized) {
         context.save();
         context.fillStyle = annotation.color + '1f';
         context.strokeStyle = annotation.color + 'bb';
         context.lineWidth = 1.5 * unit;
         context.setLineDash([7 * unit, 5 * unit]);
-        if (annotation.polygon?.length) {
+        if (annotation.type === 'cut' && annotation.polygon?.length) {
           context.beginPath();
           context.moveTo(annotation.polygon[0].x, annotation.polygon[0].y);
           for (const point of annotation.polygon.slice(1)) context.lineTo(point.x, point.y);
@@ -1341,13 +1434,13 @@ export default function Home() {
           context.fill();
           context.stroke();
         } else {
-          context.fillRect(annotation.sourceX, annotation.sourceY, annotation.w, annotation.h);
-          context.strokeRect(annotation.sourceX, annotation.sourceY, annotation.w, annotation.h);
+          context.fillRect(annotation.sourceX, annotation.sourceY, sourceW, sourceH);
+          context.strokeRect(annotation.sourceX, annotation.sourceY, sourceW, sourceH);
         }
         context.restore();
         drawArrow(
           context,
-          { x: annotation.sourceX + annotation.w / 2, y: annotation.sourceY + annotation.h / 2 },
+          { x: annotation.sourceX + sourceW / 2, y: annotation.sourceY + sourceH / 2 },
           { x: annotation.x + annotation.w / 2, y: annotation.y + annotation.h / 2 },
           annotation.color + 'cc',
           1.5 * unit,
@@ -1367,6 +1460,16 @@ export default function Home() {
       } else {
         context.strokeRect(annotation.x, annotation.y, annotation.w, annotation.h);
       }
+      if (annotation.type === 'resize') {
+        const resizeLabel = Math.round(sourceW) + '×' + Math.round(sourceH) + ' → ' + Math.round(annotation.w) + '×' + Math.round(annotation.h);
+        context.font = '800 ' + 9 * unit + 'px Arial';
+        const labelWidth = context.measureText(resizeLabel).width + 14 * unit;
+        context.fillStyle = annotation.color;
+        context.fillRect(annotation.x, annotation.y + annotation.h, labelWidth, 20 * unit);
+        context.fillStyle = '#171513';
+        context.textBaseline = 'middle';
+        context.fillText(resizeLabel, annotation.x + 7 * unit, annotation.y + annotation.h + 10 * unit);
+      }
     }
 
     drawBadge(context, annotation, index, unit);
@@ -1377,6 +1480,14 @@ export default function Home() {
       context.strokeStyle = '#ffffff';
       context.lineWidth = 1.3 * unit;
       context.strokeRect(bounds.x - 5 * unit, bounds.y - 5 * unit, bounds.w + 10 * unit, bounds.h + 10 * unit);
+      if (annotation.type === 'resize') {
+        const handleSize = 11 * unit;
+        context.setLineDash([]);
+        context.fillStyle = '#ffffff';
+        context.fillRect(bounds.x + bounds.w - handleSize / 2, bounds.y + bounds.h - handleSize / 2, handleSize, handleSize);
+        context.strokeStyle = annotation.color;
+        context.strokeRect(bounds.x + bounds.w - handleSize / 2, bounds.y + bounds.h - handleSize / 2, handleSize, handleSize);
+      }
     }
     context.restore();
   }
@@ -1396,6 +1507,7 @@ export default function Home() {
       value.tool === 'rect' ||
       value.tool === 'cut' ||
       value.tool === 'frame' ||
+      value.tool === 'resize' ||
       value.tool === 'delete'
     ) {
       context.fillRect(bounds.x, bounds.y, bounds.w, bounds.h);
@@ -1487,25 +1599,31 @@ export default function Home() {
     paintCanvas(context, visibleLayerIds, true, draft);
   }, [imageSize, annotations, layers, selectedId, draft, polygonPoints, renderTick]);
 
-  function commitAnnotations(next: Annotation[], before = annotationsRef.current) {
-    setPast((items) => [...items, cloneAnnotations(before)].slice(-50));
-    setFuture([]);
+  function replaceAnnotations(next: Annotation[]) {
+    annotationsRef.current = next;
     setAnnotations(next);
   }
 
+  function commitAnnotations(next: Annotation[], before = annotationsRef.current) {
+    setPast((items) => [...items, cloneAnnotations(before)].slice(-50));
+    setFuture([]);
+    replaceAnnotations(next);
+    persistActiveImageTab({ annotations: next });
+  }
+
   function updateAnnotation(id: string, patch: Partial<Annotation>) {
-    setAnnotations((items) =>
-      items.map((annotation) =>
-        annotation.id === id ? ({ ...annotation, ...patch } as Annotation) : annotation,
-      ),
-    );
+    const next = annotationsRef.current.map((annotation) =>
+      annotation.id === id ? ({ ...annotation, ...patch } as Annotation) : annotation);
+    replaceAnnotations(next);
+    persistActiveImageTab({ annotations: next });
   }
 
   function undo() {
     if (!past.length) return;
     const previous = past[past.length - 1];
     setFuture((items) => [cloneAnnotations(annotationsRef.current), ...items].slice(0, 50));
-    setAnnotations(previous);
+    replaceAnnotations(previous);
+    persistActiveImageTab({ annotations: previous });
     setPast((items) => items.slice(0, -1));
     setSelectedId(null);
   }
@@ -1514,7 +1632,8 @@ export default function Home() {
     if (!future.length) return;
     const next = future[0];
     setPast((items) => [...items, cloneAnnotations(annotationsRef.current)].slice(-50));
-    setAnnotations(next);
+    replaceAnnotations(next);
+    persistActiveImageTab({ annotations: next });
     setFuture((items) => items.slice(1));
     setSelectedId(null);
   }
@@ -1639,6 +1758,13 @@ export default function Home() {
       );
     });
   }
+  function isResizeHandle(point: Point, annotation: ResizeAnnotation) {
+    const tolerance = 18 / Math.max(zoomRef.current, 0.1);
+    const handleX = annotation.x + annotation.w;
+    const handleY = annotation.y + annotation.h;
+    return Math.abs(point.x - handleX) <= tolerance && Math.abs(point.y - handleY) <= tolerance;
+  }
+
 
   function groupAtPoint(point?: Point) {
     if (!point) return undefined;
@@ -1837,13 +1963,18 @@ export default function Home() {
       const found = hitAnnotation(point);
       setSelectedId(found?.id || null);
       if (found) {
-        dragRef.current = {
-          kind: 'move',
-          id: found.id,
-          start: point,
-          original: structuredClone(found),
-          before: cloneAnnotations(annotationsRef.current),
-        };
+        const before = cloneAnnotations(annotationsRef.current);
+        if (found.type === 'resize' && isResizeHandle(point, found)) {
+          dragRef.current = {
+            kind: 'resize', id: found.id, start: point,
+            original: structuredClone(found), before,
+          };
+        } else {
+          dragRef.current = {
+            kind: 'move', id: found.id, start: point,
+            original: structuredClone(found), before,
+          };
+        }
       }
       return;
     }
@@ -1879,11 +2010,31 @@ export default function Home() {
 
     const point = canvasPoint(event);
 
+    if (drag.kind === 'resize') {
+      const dx = point.x - drag.start.x;
+      const dy = point.y - drag.start.y;
+      const ratio = drag.original.sourceW / Math.max(1, drag.original.sourceH);
+      let width = Math.max(8, drag.original.w + dx);
+      let height = Math.max(8, drag.original.h + dy);
+      if (drag.original.lockAspectRatio) {
+        if (Math.abs(dx) >= Math.abs(dy)) height = width / ratio;
+        else width = height * ratio;
+      }
+      replaceAnnotations(
+        annotationsRef.current.map((annotation) =>
+          annotation.id === drag.id
+            ? { ...drag.original, w: Math.round(width), h: Math.round(height) }
+            : annotation,
+        ),
+      );
+      return;
+    }
+
     if (drag.kind === 'move') {
       const dx = point.x - drag.start.x;
       const dy = point.y - drag.start.y;
-      setAnnotations((items) =>
-        items.map((annotation) => {
+      replaceAnnotations(
+        annotationsRef.current.map((annotation) => {
           if (annotation.id === drag.id) return moveAnnotationAndRefreshColor(drag.original, dx, dy);
           if (drag.original.type === 'frame' && annotation.groupId === drag.original.id) {
             const originalChild = drag.before.find((item) => item.id === annotation.id);
@@ -1914,9 +2065,10 @@ export default function Home() {
       return;
     }
 
-    if (drag.kind === 'move') {
+    if (drag.kind === 'move' || drag.kind === 'resize') {
       setPast((items) => [...items, drag.before].slice(-50));
       setFuture([]);
+      persistActiveImageTab({ annotations: annotationsRef.current });
       return;
     }
 
@@ -1927,7 +2079,7 @@ export default function Home() {
     if (value.tool === 'frame') {
       const base = baseAnnotation(
         'modifier',
-        t('Every item placed inside this frame belongs to the same correction.', 'Tous les éléments placés dans ce cadre font partie de la même correction.'),
+        '',
       );
       addAnnotation({ ...base, type: 'frame', ...bounds, groupId: undefined });
     }
@@ -1978,7 +2130,7 @@ export default function Home() {
       addAnnotation({ ...base, type: 'draw', points: value.points });
     }
 
-    if (value.tool === 'cut' && imageRef.current) {
+    if ((value.tool === 'cut' || value.tool === 'resize') && imageRef.current) {
       const source = {
         x: Math.max(0, Math.round(bounds.x)),
         y: Math.max(0, Math.round(bounds.y)),
@@ -2001,19 +2153,31 @@ export default function Home() {
           source.w,
           source.h,
         );
-      const base = baseAnnotation('deplacer', t('Move this item to the indicated new position.', 'Déplacer cet élément vers la nouvelle position indiquée.'), value.start);
-      const annotation: CutAnnotation = {
-        ...base,
-        type: 'cut',
-        sourceX: source.x,
-        sourceY: source.y,
-        x: source.x,
-        y: source.y,
-        w: source.w,
-        h: source.h,
-        imageData: cutCanvas.toDataURL('image/png'),
-      };
-      addAnnotation(annotation);
+      const imageData = cutCanvas.toDataURL('image/png');
+      if (value.tool === 'resize') {
+        const base = baseAnnotation(
+          'modifier',
+          t('Resize this extracted area to the requested dimensions.', 'Redimensionner cette zone extraite aux dimensions demandées.'),
+          value.start,
+        );
+        const annotation: ResizeAnnotation = {
+          ...base, type: 'resize', sourceX: source.x, sourceY: source.y,
+          sourceW: source.w, sourceH: source.h, x: source.x, y: source.y,
+          w: source.w, h: source.h, imageData, lockAspectRatio: true,
+        };
+        addAnnotation(annotation);
+      } else {
+        const base = baseAnnotation(
+          'deplacer',
+          t('Move this item to the indicated new position.', 'Déplacer cet élément vers la nouvelle position indiquée.'),
+          value.start,
+        );
+        const annotation: CutAnnotation = {
+          ...base, type: 'cut', sourceX: source.x, sourceY: source.y,
+          x: source.x, y: source.y, w: source.w, h: source.h, imageData,
+        };
+        addAnnotation(annotation);
+      }
       setTool('select');
     }
   }
@@ -2349,6 +2513,7 @@ export default function Home() {
           const workspace = JSON.parse(await workspaceEntry.async('string')) as {
             workspaceVersion: number;
             locale?: unknown;
+            workspaceInstructions?: unknown;
             activeTabId: string;
             tabs: StoredTab[];
           };
@@ -2356,6 +2521,9 @@ export default function Home() {
             throw new Error('Espace de travail invalide');
           }
           if (isAppLocale(workspace.locale)) changeLocale(workspace.locale);
+          setWorkspaceInstructions(
+            typeof workspace.workspaceInstructions === 'string' ? workspace.workspaceInstructions : '',
+          );
 
           const restoredTabs: BoardTab[] = [];
           for (const storedTab of workspace.tabs) {
@@ -2505,6 +2673,13 @@ export default function Home() {
       const bounds = annotationBounds(annotation);
       return pt('area x=', 'zone x=') + Math.round(bounds.x) + ', y=' + Math.round(bounds.y) + pt(', width=', ', largeur=') + Math.round(bounds.w) + pt(', height=', ', hauteur=') + Math.round(bounds.h);
     }
+    if (annotation.type === 'resize') {
+      return 'source x=' + Math.round(annotation.sourceX) + ', y=' + Math.round(annotation.sourceY) +
+        ', ' + Math.round(annotation.sourceW) + '×' + Math.round(annotation.sourceH) +
+        pt(' px; target x=', ' px ; cible x=') + Math.round(annotation.x) + ', y=' + Math.round(annotation.y) +
+        ', ' + Math.round(annotation.w) + '×' + Math.round(annotation.h) + ' px';
+    }
+
     if (annotation.type === 'cut') {
       const dx = Math.round(annotation.x - annotation.sourceX);
       const dy = Math.round(annotation.y - annotation.sourceY);
@@ -2516,17 +2691,23 @@ export default function Home() {
 
   function buildPrompt(project: ProjectFile = projectData(), promptLocale: AppLocale = locale) {
     const pt = (english: string, french: string) => translate(promptLocale, english, french);
-    const sourceAnnotations = project.annotations;
+    const sourceAnnotations = createImageDeliveryProject(project).annotations;
     const sourceLayers = project.layers;
     const sourceImageName = project.image?.name || 'image.png';
+    const mainImageMessage = project.globalInstructions.trim();
     const lines = [
       pt('# Interface correction brief — ', '# Brief de corrections — ') + project.title,
       '',
       pt('Modify the interface using “images/original-', 'Modifie l’interface à partir de « images/original-') + safeFileName(sourceImageName) + pt('”, following “images/annotated.png” and the numbered corrections below.', ' » en suivant « images/annotated.png » et les corrections numérotées ci-dessous.'),
       '',
-      pt('## General intent', '## Intention générale'),
+      pt('## Main image message', '## Message principal de l’image'),
       '',
-      project.globalInstructions.trim() || pt('No additional general instruction.', 'Aucune instruction générale supplémentaire.'),
+      mainImageMessage || pt('No main message was provided for this image.', 'Aucun message principal n’a été fourni pour cette image.'),
+      '',
+      pt(
+        'This message applies to the whole image and to every correction below.',
+        'Ce message s’applique à l’ensemble de l’image et à toutes les corrections ci-dessous.',
+      ),
       '',
       pt('## Rules', '## Règles'),
       '',
@@ -2546,6 +2727,19 @@ export default function Home() {
       const groupIndex = annotation.groupId
         ? sourceAnnotations.findIndex((item) => item.id === annotation.groupId)
         : -1;
+      const frameChildren = annotation.type === 'frame'
+        ? sourceAnnotations
+            .map((item, childIndex) => ({ item, childIndex }))
+            .filter(({ item }) => item.groupId === annotation.id)
+            .map(({ childIndex }) => String(childIndex + 1).padStart(2, '0'))
+        : [];
+      const instruction = annotation.type === 'frame' && !hasFrameInstruction(annotation.description)
+        ? frameChildren.length
+          ? pt('Grouping frame: apply the instructions of its linked items.', 'Cadre de groupe : appliquer les consignes de ses éléments liés.')
+          : mainImageMessage
+            ? pt('Apply the main image message to this highlighted area.', 'Appliquer le message principal de l’image à cette zone encadrée.')
+            : pt('MISSING INSTRUCTION — describe the expected change for this area.', 'CONSIGNE MANQUANTE — décrire le changement attendu pour cette zone.')
+        : annotation.description.trim() || pt('Instruction to specify.', 'Instruction à préciser.');
       lines.push('### ' + String(index + 1).padStart(2, '0') + ' — ' + CATEGORY_LABELS[promptLocale][annotation.category]);
       lines.push('');
       lines.push(pt('- Type: ', '- Type : ') + TYPE_LABELS[promptLocale][annotation.type]);
@@ -2554,14 +2748,10 @@ export default function Home() {
         lines.push(pt('- Belongs to frame: ', '- Appartient au cadre : ') + String(groupIndex + 1).padStart(2, '0'));
       }
       lines.push(pt('- Position: ', '- Position : ') + locationText(annotation, promptLocale));
-      lines.push(pt('- Instruction: ', '- Instruction : ') + (annotation.description.trim() || pt('Instruction to specify.', 'Instruction à préciser.')));
+      lines.push(pt('- Instruction: ', '- Instruction : ') + instruction);
 
       if (annotation.type === 'frame') {
-        const children = sourceAnnotations
-          .map((item, childIndex) => ({ item, childIndex }))
-          .filter(({ item }) => item.groupId === annotation.id)
-          .map(({ childIndex }) => String(childIndex + 1).padStart(2, '0'));
-        lines.push(pt('- Frame items: ', '- Éléments du cadre : ') + (children.join(', ') || pt('none', 'aucun')));
+        lines.push(pt('- Frame items: ', '- Éléments du cadre : ') + (frameChildren.join(', ') || pt('none', 'aucun')));
       }
       if (annotation.type === 'shape') {
         lines.push(pt('- Shape: ', '- Forme : ') + annotation.shape + pt('; fill: ', ' ; remplissage : ') + annotation.fillColor);
@@ -2585,13 +2775,16 @@ export default function Home() {
               .join(', '),
         );
       }
-      if (annotation.type === 'cut') {
+      if (annotation.type === 'cut' || annotation.type === 'resize') {
         lines.push(
           pt('- Cutout: “decoupes/', '- Découpe : « decoupes/') +
             String(index + 1).padStart(2, '0') +
             pt('-element.png”', '-element.png »') +
-            (annotation.polygon?.length ? pt('; polygon outline.', ' ; contour polygonal.') : '.'),
+            (annotation.type === 'cut' && annotation.polygon?.length ? pt('; polygon outline.', ' ; contour polygonal.') : '.'),
         );
+        if (annotation.type === 'resize') {
+          lines.push(pt('- Resize: ', '- Redimensionnement : ') + Math.round(annotation.sourceW) + '×' + Math.round(annotation.sourceH) + ' px → ' + Math.round(annotation.w) + '×' + Math.round(annotation.h) + ' px.');
+        }
       }
       lines.push('');
     });
@@ -2605,12 +2798,29 @@ export default function Home() {
     return lines.join('\n');
   }
 
+  function withWorkspaceInstructions(prompt: string, promptLocale: AppLocale = locale) {
+    const message = workspaceInstructions.trim();
+    if (!message) return prompt;
+    const pt = (english: string, french: string) => translate(promptLocale, english, french);
+    return [
+      pt('# Workspace-wide message', '# Message global de l’espace de travail'),
+      '',
+      message,
+      '',
+      pt(
+        'This instruction applies to every image and video tab in this package.',
+        'Cette consigne s’applique à tous les onglets image et vidéo de ce paquet.',
+      ),
+      '',
+      prompt,
+    ].join('\n');
+  }
+
   function openExport() {
-    setExportPrompt(
-      activeTab?.kind === 'video'
-        ? buildVideoPrompt(createVideoDeliveryProject(activeTab.project, includeOriginalVideosInExport), locale)
-        : buildPrompt(projectData(), locale),
-    );
+    const prompt = activeTab?.kind === 'video'
+      ? buildVideoPrompt(createVideoDeliveryProject(activeTab.project, includeOriginalVideosInExport), locale)
+      : buildPrompt(projectData(), locale);
+    setExportPrompt(withWorkspaceInstructions(prompt, locale));
     setExportOpen(true);
   }
 
@@ -2627,7 +2837,7 @@ export default function Home() {
     const cache = new Map<string, HTMLImageElement>();
     await Promise.all(
       project.annotations
-        .filter((annotation): annotation is CutAnnotation => annotation.type === 'cut')
+        .filter((annotation): annotation is CutAnnotation | ResizeAnnotation => annotation.type === 'cut' || annotation.type === 'resize')
         .map(async (annotation) => {
           try {
             cache.set(annotation.id, await loadImageElement(annotation.imageData));
@@ -2713,7 +2923,7 @@ export default function Home() {
 
     project.annotations.forEach((annotation, index) => {
       const number = String(index + 1).padStart(2, '0');
-      if (annotation.type === 'cut') {
+      if (annotation.type === 'cut' || annotation.type === 'resize') {
         zip.file(
           folderPath + 'decoupes/' + number + '-element.png',
           dataUrlBytes(annotation.imageData, `La découpe ${number}`),
@@ -2897,6 +3107,24 @@ export default function Home() {
       (tab) => tab.kind === 'video' || Boolean(tab.project.image),
     );
     if (!exportableTabs.length) return false;
+    if (false && options.includePrompt) {
+      const unresolvedFrames = exportableTabs.flatMap((tab, tabIndex) =>
+        tab.kind === 'image'
+          ? tab.project.annotations
+              .filter(() => false)
+              .map(() => String(tabIndex + 1).padStart(2, '0') + ' — ' + tab.label)
+          : [],
+      );
+      if (unresolvedFrames.length) {
+        window.alert(
+          t('AI export blocked: ', 'Export IA bloqué : ') + unresolvedFrames.length +
+          t(' frame(s) have no usable instruction. Add a message to each frame or a main image message before exporting.\n\nAffected tabs:\n', ' cadre(s) n’ont aucune consigne exploitable. Ajoutez un message à chaque cadre ou un message principal à l’image avant l’export.\n\nOnglets concernés :\n') +
+          Array.from(new Set(unresolvedFrames)).join('\n'),
+        );
+        setSaveStatus(t('Missing annotation messages', 'Messages d’annotation manquants'));
+        return false;
+      }
+    }
     const currentActive = workspaceTabs.find((tab) => tab.id === activeTabId);
     const packageTitle =
       currentActive?.kind === 'video' ? currentActive.project.title : projectTitle;
@@ -2911,9 +3139,16 @@ export default function Home() {
       '/';
     const isDeliveryExport = options.delivery;
     const includeOriginalVideos = !isDeliveryExport || includeOriginalVideosInExport;
+    const packagedImageProjects = new Map<string, ProjectFile>();
     const packagedVideoProjects = new Map<string, VideoProjectData>();
     workspaceTabs.forEach((tab) => {
-      if (tab.kind !== 'video') return;
+      if (tab.kind === 'image') {
+        packagedImageProjects.set(
+          tab.id,
+          isDeliveryExport ? createImageDeliveryProject(tab.project) : tab.project,
+        );
+        return;
+      }
       packagedVideoProjects.set(
         tab.id,
         isDeliveryExport
@@ -2934,7 +3169,12 @@ export default function Home() {
       const zip = new JSZip();
       const storedTabs = workspaceTabs.map((tab) => {
         if (tab.kind === 'image') {
-          return { id: tab.id, label: tab.label, kind: 'image' as const, project: tab.project };
+          return {
+            id: tab.id,
+            label: tab.label,
+            kind: 'image' as const,
+            project: packagedImageProjects.get(tab.id) || tab.project,
+          };
         }
         const exportIndex = exportableTabs.findIndex((item) => item.id === tab.id);
         const folder = exportFolder(tab, Math.max(0, exportIndex));
@@ -2953,6 +3193,7 @@ export default function Home() {
           {
             workspaceVersion: 2,
             locale,
+            workspaceInstructions,
             activeTabId,
             tabs: storedTabs,
           },
@@ -2962,19 +3203,23 @@ export default function Home() {
       );
       const imageCount = exportableTabs.filter((tab) => tab.kind === 'image').length;
       const videoCount = exportableTabs.length - imageCount;
-      const correctionCount = exportableTabs.reduce(
-        (count, tab) =>
-          count +
-          tab.project.annotations.length +
-          (tab.kind === 'video'
-            ? (tab.project.frameStops || []).reduce(
-                (stopCount, stop) => stopCount + (stop.annotations || []).length,
-                0,
-              )
-            : 0),
-        0,
+      const correctionCount = exportableTabs.reduce((count, tab) => {
+        if (tab.kind === 'image') {
+          return count + (packagedImageProjects.get(tab.id) || tab.project).annotations.length;
+        }
+        const packagedProject = packagedVideoProjects.get(tab.id) || tab.project;
+        return count + packagedProject.annotations.length + (packagedProject.frameStops || []).reduce(
+          (stopCount, stop) => stopCount + (stop.annotations || []).length,
+          0,
+        );
+      }, 0);
+      const packagedWorkspaceTabs: BoardTab[] = workspaceTabs.map((tab) =>
+        tab.kind === 'image'
+          ? { ...tab, project: packagedImageProjects.get(tab.id) || tab.project }
+          : { ...tab, project: packagedVideoProjects.get(tab.id) || tab.project },
       );
-      const thumbnail = await createWorkspaceThumbnail(workspaceTabs, currentActive);
+      const packagedCurrentActive = packagedWorkspaceTabs.find((tab) => tab.id === activeTabId);
+      const thumbnail = await createWorkspaceThumbnail(packagedWorkspaceTabs, packagedCurrentActive);
       zip.file('thumbnail.png', thumbnail);
       zip.file(
         'manifest.cyannota.json',
@@ -3025,7 +3270,7 @@ export default function Home() {
             const packagedProject = packagedVideoProjects.get(tab.id);
             if (!packagedProject) throw new Error('Projet vidéo préparé introuvable.');
             const generatedPrompt = options.includePrompt
-              ? buildVideoPrompt(packagedProject, locale)
+              ? withWorkspaceInstructions(buildVideoPrompt(packagedProject, locale), locale)
               : undefined;
             const prompt =
               options.includePrompt && options.delivery && tab.id === activeTabId && exportPrompt
@@ -3043,14 +3288,15 @@ export default function Home() {
               prompt,
             );
           } else {
+            const packagedProject = packagedImageProjects.get(tab.id) || tab.project;
             const generatedPrompt = options.includePrompt
-              ? buildPrompt(tab.project, locale)
+              ? withWorkspaceInstructions(buildPrompt(packagedProject, locale), locale)
               : undefined;
             const prompt =
               options.includePrompt && options.delivery && tab.id === activeTabId && exportPrompt
                 ? exportPrompt
                 : generatedPrompt;
-            await addProjectToZip(zip, tab.project, folder, prompt);
+            await addProjectToZip(zip, packagedProject, folder, prompt);
           }
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
@@ -3093,6 +3339,47 @@ export default function Home() {
     await navigator.clipboard.writeText(exportPrompt);
   }
 
+
+  function renderWorkspaceMessageDialog() {
+    if (!workspaceMessageOpen) return null;
+    return (
+      <div className="modal-backdrop" onMouseDown={() => setWorkspaceMessageOpen(false)}>
+        <section className="export-modal workspace-message-modal" onMouseDown={(event) => event.stopPropagation()}>
+          <header className="modal-header">
+            <div>
+              <p className="eyebrow">{t('ALL TABS', 'TOUS LES ONGLETS')}</p>
+              <h2>{t('Workspace-wide message', 'Message global de l’espace de travail')}</h2>
+              <p>{t(
+                'Use this for an instruction or context that applies to every open image and video tab.',
+                'Utilise ce message pour une consigne ou un contexte qui concerne tous les onglets image et vidéo ouverts.',
+              )}</p>
+            </div>
+            <button className="modal-close" aria-label={t('Close', 'Fermer')} onClick={() => setWorkspaceMessageOpen(false)}>×</button>
+          </header>
+          <label className="workspace-message-editor">
+            <span>{t('Message included before every tab prompt', 'Message ajouté avant le prompt de chaque onglet')}</span>
+            <textarea
+              autoFocus
+              value={workspaceInstructions}
+              onChange={(event) => setWorkspaceInstructions(event.target.value)}
+              placeholder={t(
+                'Example: Keep a consistent visual language across every screen and video…',
+                'Ex. Conserver un langage visuel cohérent sur tous les écrans et toutes les vidéos…',
+              )}
+            />
+          </label>
+          <p className="workspace-message-note">{t(
+            'The message is saved inside the .cyannota project. Human exports keep it as project data but do not create prompt files.',
+            'Le message est sauvegardé dans le projet .cyannota. Les exports Humain le conservent comme donnée du projet mais ne créent aucun fichier de prompt.',
+          )}</p>
+          <footer className="modal-actions">
+            <button className="button ghost" onClick={() => setWorkspaceInstructions('')} disabled={!workspaceInstructions}>{t('Clear', 'Effacer')}</button>
+            <button className="button primary" onClick={() => setWorkspaceMessageOpen(false)}>{t('Done', 'Terminer')}</button>
+          </footer>
+        </section>
+      </div>
+    );
+  }
   function renderExportDialog() {
     if (!exportOpen) return null;
     const correctionCount = tabs.reduce(
@@ -3241,6 +3528,7 @@ export default function Home() {
     text: 'T',
     draw: '✎',
     cut: '✂',
+    resize: '⤢',
     polycut: '△',
     delete: '⌫',
     eyedropper: '◉',
@@ -3319,6 +3607,8 @@ export default function Home() {
             else saveProjectFile().catch(() => undefined);
           }}
           onExportWorkspace={openExport}
+          onEditWorkspaceMessage={() => setWorkspaceMessageOpen(true)}
+          workspaceInstructions={workspaceInstructions}
           locale={locale}
           onLocaleChange={changeLocale}
         />
@@ -3353,6 +3643,7 @@ export default function Home() {
           }}
         />
         {renderExportDialog()}
+        {renderWorkspaceMessageDialog()}
       </>
     );
   }
@@ -3369,6 +3660,14 @@ export default function Home() {
           </div>
         </div>
 
+        <div className="tool-context top-tool-context">
+          <span className="mini-tool">{toolIcons[tool]}</span>
+          <div>
+            <strong>{TOOL_LABELS[locale][tool]}</strong>
+            <span>{TOOL_HELP[locale][tool]}</span>
+          </div>
+        </div>
+
         <label className="project-title">
           <span className="status-dot" />
           <input
@@ -3378,6 +3677,13 @@ export default function Home() {
           />
         </label>
 
+
+        <button
+          className={'button ghost compact workspace-message-button top-global-message' + (workspaceInstructions.trim() ? ' active' : '')}
+          onClick={() => setWorkspaceMessageOpen(true)}
+        >
+          {t('Global message', 'Message global')}
+        </button>
         <div className="top-actions">
           <label className="language-picker" title={t('Interface and prompt language', 'Langue de l’interface et des prompts')}>
             <span>{locale.toUpperCase()}</span>
@@ -3491,24 +3797,6 @@ export default function Home() {
         <section className="stage-wrap">
           {renderMediaTabs()}
 
-          <div className="stage-toolbar">
-            <div className="tool-context">
-              <span className="mini-tool">{toolIcons[tool]}</span>
-              <div>
-                <strong>{TOOL_LABELS[locale][tool]}</strong>
-                <span>{TOOL_HELP[locale][tool]}</span>
-              </div>
-            </div>
-            <div className="zoom-controls">
-              <button className="paste-shortcut" onClick={() => pasteImageFromClipboard().catch(() => undefined)}>
-                {t('Paste', 'Coller')} <kbd>Ctrl+V</kbd>
-              </button>
-              <i className="zoom-divider" />
-              <button aria-label={t('Zoom out', 'Réduire le zoom')} onClick={() => changeZoom(zoomRef.current - 0.1)}>−</button>
-              <span>{Math.round(zoom * 100)}%</span>
-              <button aria-label={t('Zoom in', 'Augmenter le zoom')} onClick={() => changeZoom(zoomRef.current + 0.1)}>+</button>
-            </div>
-          </div>
 
           <div
             ref={stageRef}
@@ -3596,6 +3884,15 @@ export default function Home() {
           <footer className="stage-footer">
             <span>{annotations.length} {annotations.length === 1 ? t('correction', 'correction') : t('corrections', 'corrections')}</span>
             <span>{imageSize.width ? imageSize.width + ' × ' + imageSize.height + t(' px · Wheel: zoom · right click: move', ' px · Molette : zoom · clic droit : déplacer') : t('No image', 'Aucune image')}</span>
+            <div className="zoom-controls footer-zoom-controls">
+              <button className="paste-shortcut" onClick={() => pasteImageFromClipboard().catch(() => undefined)}>
+                {t('Paste', 'Coller')} <kbd>Ctrl+V</kbd>
+              </button>
+              <i className="zoom-divider" />
+              <button aria-label={t('Zoom out', 'Réduire le zoom')} onClick={() => changeZoom(zoomRef.current - 0.1)}>−</button>
+              <span>{Math.round(zoom * 100)}%</span>
+              <button aria-label={t('Zoom in', 'Augmenter le zoom')} onClick={() => changeZoom(zoomRef.current + 0.1)}>+</button>
+            </div>
             <span className="legal-status">
               {saveStatus}
               <a href="https://github.com/MrMybal/CyAnnota" target="_blank" rel="noreferrer">Source · AGPL-3.0</a>
@@ -3629,7 +3926,7 @@ export default function Home() {
                     onChange={(event) => {
                       const color = event.target.value;
                       setLayers((items) => items.map((item) => (item.id === layer.id ? { ...item, color } : item)));
-                      setAnnotations((items) => items.map((annotation) => (annotation.layerId === layer.id ? { ...annotation, color } : annotation)));
+                      replaceAnnotations(annotationsRef.current.map((annotation) => (annotation.layerId === layer.id ? { ...annotation, color } : annotation)));
                     }}
                   />
                   <button className="layer-name" onDoubleClick={() => renameLayer(layer)}>
@@ -3654,13 +3951,13 @@ export default function Home() {
 
           <section className="general-message">
             <label htmlFor="global-message">
-              <span>{t('CAPTURE MESSAGE', 'MESSAGE DE LA CAPTURE')}</span>
-              <small>{t('General context added to the prompt', 'Contexte général ajouté au prompt')}</small>
+              <span>{t('MAIN IMAGE MESSAGE', 'MESSAGE PRINCIPAL DE L’IMAGE')}</span>
+              <small>{t('Included in the exported prompt for the whole image', 'Inclus dans le prompt exporté pour toute l’image')}</small>
             </label>
             <textarea
               id="global-message"
               value={globalInstructions}
-              onChange={(event) => setGlobalInstructions(event.target.value)}
+              onChange={(event) => updateGlobalInstructions(event.target.value)}
               placeholder={t('Example: Keep the overall style, but make the screen clearer and more compact…', 'Ex. Je veux conserver le style général, mais rendre l’écran plus clair et plus compact…')}
             />
           </section>
@@ -3870,6 +4167,60 @@ export default function Home() {
                 </div>
               )}
 
+              {selected.type === 'resize' && (
+                <div className="resize-controls">
+                  <div className="resize-heading">
+                    <span>{t('SIZE FRAME', 'CADRE SIZE')}</span>
+                    <strong>{Math.round(selected.sourceW)}×{Math.round(selected.sourceH)} → {Math.round(selected.w)}×{Math.round(selected.h)} px</strong>
+                  </div>
+                  <div className="resize-dimensions">
+                    <label>
+                      <span>{t('Width', 'Largeur')}</span>
+                      <input
+                        type="number" min="8" step="1" value={Math.round(selected.w)}
+                        onChange={(event) => {
+                          const width = Math.max(8, Number(event.target.value) || 8);
+                          updateAnnotation(selected.id, {
+                            w: width,
+                            h: selected.lockAspectRatio
+                              ? Math.max(8, Math.round(width * selected.sourceH / selected.sourceW))
+                              : selected.h,
+                          });
+                        }}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('Height', 'Hauteur')}</span>
+                      <input
+                        type="number" min="8" step="1" value={Math.round(selected.h)}
+                        onChange={(event) => {
+                          const height = Math.max(8, Number(event.target.value) || 8);
+                          updateAnnotation(selected.id, {
+                            h: height,
+                            w: selected.lockAspectRatio
+                              ? Math.max(8, Math.round(height * selected.sourceW / selected.sourceH))
+                              : selected.w,
+                          });
+                        }}
+                      />
+                    </label>
+                  </div>
+                  <label className="resize-ratio">
+                    <input type="checkbox" checked={selected.lockAspectRatio} onChange={(event) => updateAnnotation(selected.id, { lockAspectRatio: event.target.checked })} />
+                    <span>{t('Keep aspect ratio', 'Conserver les proportions')}</span>
+                  </label>
+                  <div className="resize-presets">
+                    {[50, 75, 100, 125, 150, 200].map((percent) => (
+                      <button key={percent} type="button" onClick={() => updateAnnotation(selected.id, {
+                        w: Math.max(8, Math.round(selected.sourceW * percent / 100)),
+                        h: Math.max(8, Math.round(selected.sourceH * percent / 100)),
+                      })}>{percent}%</button>
+                    ))}
+                  </div>
+                  <small>{t('Drag the white handle on the image or enter exact target dimensions.', 'Fais glisser la poignée blanche sur l’image ou saisis les dimensions cibles exactes.')}</small>
+                </div>
+              )}
+
               <div className="references" data-reference-paste="true">
                 <div className="references-heading">
                   <div>
@@ -3912,6 +4263,7 @@ export default function Home() {
       </section>
 
       {renderExportDialog()}
+      {renderWorkspaceMessageDialog()}
     </main>
   );
 }
