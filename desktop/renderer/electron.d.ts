@@ -24,6 +24,11 @@ declare global {
         message: string;
         detail: string;
       }): Promise<{ shown: boolean }>;
+      onOpenFiles(callback: (items: Array<{
+        name: string;
+        type: string;
+        bytes: ArrayBuffer;
+      }>) => void): () => void;
     };
   }
 }

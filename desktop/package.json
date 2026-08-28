@@ -1,6 +1,6 @@
 {
   "name": "cyannota-desktop",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": true,
   "description": "CyAnnota - application autonome d’annotation d’interfaces",
   "main": "main.cjs",
