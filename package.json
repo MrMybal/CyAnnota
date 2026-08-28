@@ -1,0 +1,54 @@
+{
+  "name": "cyannota",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "predev": "node scripts/sync-ffmpeg.mjs",
+    "dev": "vinext dev",
+    "prebuild": "node scripts/sync-ffmpeg.mjs",
+    "build": "vinext build",
+    "start": "vinext start",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "desktop:renderer:dev": "vite --config desktop/vite.config.ts",
+    "desktop:dev": "node desktop/scripts/dev.mjs",
+    "desktop:renderer:build": "vite build --config desktop/vite.config.ts",
+    "desktop:pack": "npm run desktop:renderer:build && electron-builder --projectDir desktop --config ../electron-builder.yml --dir",
+    "desktop:build": "npm run desktop:renderer:build && electron-builder --projectDir desktop --config ../electron-builder.yml --win portable"
+  },
+  "dependencies": {
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "jszip": "^3.10.1",
+    "next": "16.2.6",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@cloudflare/workers-types": "4.20260515.1",
+    "@openai/sites-vite-plugin": "^0.1.0 || ^0.2.0",
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "react-server-dom-webpack": "19.2.6",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3",
+    "vinext": "1.0.0-beta.3",
+    "vite": "8.0.13",
+    "wrangler": "4.92.0"
+  },
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "description": "CyAnnota - outil autonome d’annotation et de correction d’interfaces",
+  "author": "CyberAlien"
+}
