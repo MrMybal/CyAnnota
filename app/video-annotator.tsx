@@ -1835,7 +1835,10 @@ export default function VideoAnnotator({
               <button className="delete-button" onClick={deleteSelected}>Supprimer cette correction</button>
             </section>
           )}
-          <footer className="video-status">{workspaceStatus || saveStatus}</footer>
+          <footer className="video-status">
+            <span>{workspaceStatus || saveStatus}</span>
+            <a href="https://github.com/MrMybal/CyAnnota" target="_blank" rel="noreferrer">Source · AGPL-3.0</a>
+          </footer>
         </aside>
       </section>
 

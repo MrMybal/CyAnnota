@@ -3520,7 +3520,10 @@ export default function Home() {
           <footer className="stage-footer">
             <span>{annotations.length} correction{annotations.length === 1 ? '' : 's'}</span>
             <span>{imageSize.width ? imageSize.width + ' × ' + imageSize.height + ' px · Molette : zoom · clic droit : déplacer' : 'Aucune image'}</span>
-            <span>{saveStatus}</span>
+            <span className="legal-status">
+              {saveStatus}
+              <a href="https://github.com/MrMybal/CyAnnota" target="_blank" rel="noreferrer">Source · AGPL-3.0</a>
+            </span>
           </footer>
         </section>
 

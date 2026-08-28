@@ -14,6 +14,14 @@ files:
   - preload.cjs
   - dist/renderer/**/*
 
+extraResources:
+  - from: ../LICENSE
+    to: legal/LICENSE-CyAnnota.txt
+  - from: ../THIRD_PARTY_NOTICES.md
+    to: legal/THIRD_PARTY_NOTICES.md
+  - from: ../licenses
+    to: legal/licenses
+
 win:
   target:
     - target: portable
