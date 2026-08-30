@@ -1,8 +1,9 @@
-const { app, BrowserWindow, dialog, ipcMain, net, protocol, session, shell } = require('electron');
+const { app, BrowserWindow, ClipboardItem, clipboard, dialog, ipcMain, net, protocol, session, shell } = require('electron');
 const { randomUUID } = require('node:crypto');
+const { constants: fsConstants } = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { pathToFileURL } = require('node:url');
+const { fileURLToPath, pathToFileURL } = require('node:url');
 
 const DESKTOP_SCHEME = 'cyannota';
 const DESKTOP_ORIGIN = 'cyannota://app';
@@ -31,7 +32,7 @@ const pendingSavePaths = new Map();
 const pendingOpenPaths = [];
 const SUPPORTED_OPEN_EXTENSIONS = new Set([
   '.cyannota', '.zip',
-  '.png', '.jpg', '.jpeg', '.webp',
+  '.png', '.jpg', '.jpeg', '.webp', '.gif',
   '.mp4', '.webm', '.ogg', '.mov', '.m4v',
 ]);
 
@@ -44,6 +45,7 @@ function mediaTypeForPath(filePath) {
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
     '.webp': 'image/webp',
+    '.gif': 'image/gif',
     '.mp4': 'video/mp4',
     '.webm': 'video/webm',
     '.ogg': 'video/ogg',
@@ -85,11 +87,7 @@ async function supportedLaunchPaths(argumentsList) {
   return valid;
 }
 
-async function sendOpenPaths(filePaths) {
-  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) {
-    pendingOpenPaths.push(...filePaths);
-    return;
-  }
+async function openItemsForPaths(filePaths) {
   const items = [];
   for (const filePath of filePaths) {
     try {
@@ -103,7 +101,39 @@ async function sendOpenPaths(filePaths) {
       console.warn('Impossible d’ouvrir le fichier transmis à CyAnnota', filePath, error);
     }
   }
+  return items;
+}
+
+async function sendOpenPaths(filePaths) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) {
+    pendingOpenPaths.push(...filePaths);
+    return;
+  }
+  const items = await openItemsForPaths(filePaths);
   if (items.length) mainWindow.webContents.send('cyannota:open-files', items);
+}
+
+async function readClipboardOpenItems() {
+  const paths = [];
+  const clipboardItems = await clipboard.read();
+  for (const item of clipboardItems) {
+    if (!item.types.includes('text/uri-list')) continue;
+    const blob = await item.getType('text/uri-list');
+    if (!blob || typeof blob.text !== 'function') continue;
+    const uriList = await blob.text();
+    for (const line of uriList.split(/\r?\n/)) {
+      const value = line.trim();
+      if (!value || value.startsWith('#')) continue;
+      try {
+        const url = new URL(value);
+        if (url.protocol === 'file:') paths.push(fileURLToPath(url));
+      } catch {
+        // Ignore les entrées de presse-papiers qui ne sont pas des fichiers valides.
+      }
+    }
+  }
+  const supportedPaths = await supportedLaunchPaths(paths);
+  return openItemsForPaths(supportedPaths);
 }
 
 async function queueLaunchArguments(argumentsList) {
@@ -199,8 +229,34 @@ function saveDialogOptions(name) {
     title: 'Enregistrer avec CyAnnota',
     defaultPath: path.join(lastSaveDirectory || app.getPath('downloads'), suggestedName),
     filters,
-    properties: ['showOverwriteConfirmation', 'createDirectory'],
+    properties: ['createDirectory'],
   };
+}
+
+async function nextAvailableSavePath(requestedPath) {
+  const extension = path.extname(requestedPath);
+  const basePath = requestedPath.slice(0, requestedPath.length - extension.length);
+  let index = 0;
+  while (true) {
+    const candidate = index === 0 ? requestedPath : basePath + ' (' + index + ')' + extension;
+    try {
+      await fs.access(candidate);
+      index += 1;
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        return { filePath: candidate, renamed: index > 0 };
+      }
+      throw error;
+    }
+  }
+}
+
+async function copyFileReferenceToClipboard(filePath) {
+  await clipboard.write([
+    new ClipboardItem({
+      'text/uri-list': pathToFileURL(filePath).href,
+    }),
+  ]);
 }
 
 function getPendingSave(event, payload) {
@@ -245,6 +301,11 @@ function saveErrorDetail(error, filePath) {
 }
 
 function registerDesktopIpc() {
+  ipcMain.handle('cyannota:read-clipboard-files', async (event) => {
+    assertTrustedSender(event);
+    return readClipboardOpenItems();
+  });
+
   ipcMain.handle('cyannota:choose-save-file', async (event, payload) => {
     assertTrustedSender(event);
 
@@ -255,6 +316,7 @@ function registerDesktopIpc() {
     }
 
     const now = Date.now();
+    const target = await nextAvailableSavePath(result.filePath);
     for (const [expiredToken, expiredPending] of pendingSavePaths) {
       if (now - expiredPending.createdAt > 10 * 60 * 1000) {
         await abortPendingSave(expiredToken, expiredPending);
@@ -263,14 +325,21 @@ function registerDesktopIpc() {
 
     const token = randomUUID();
     pendingSavePaths.set(token, {
-      filePath: result.filePath,
+      filePath: target.filePath,
+      requestedPath: result.filePath,
+      renamed: target.renamed,
       tempPath: path.join(app.getPath('temp'), `cyannota-${token}.tmp`),
       senderId: event.sender.id,
       createdAt: now,
       handle: null,
       bytesWritten: 0,
     });
-    return { canceled: false, token };
+    return {
+      canceled: false,
+      token,
+      fileName: path.basename(target.filePath),
+      renamed: target.renamed,
+    };
   });
 
   ipcMain.handle('cyannota:begin-save-file', async (event, payload) => {
@@ -334,13 +403,35 @@ function registerDesktopIpc() {
       if (!pending.bytesWritten) {
         throw new Error('Le fichier généré est vide.');
       }
-      await fs.copyFile(pending.tempPath, pending.filePath);
+      const target = await nextAvailableSavePath(pending.requestedPath || pending.filePath);
+      pending.filePath = target.filePath;
+      pending.renamed = pending.renamed || target.renamed;
+      await fs.copyFile(pending.tempPath, pending.filePath, fsConstants.COPYFILE_EXCL);
       await fs.rm(pending.tempPath, { force: true });
       await rememberSaveDirectory(pending.filePath).catch((error) => {
         console.warn('Impossible de mémoriser le dossier de sauvegarde', error);
       });
+
+      let copied = false;
+      let copyError;
+      if (payload?.copyToClipboard === true) {
+        try {
+          await copyFileReferenceToClipboard(pending.filePath);
+          copied = true;
+        } catch (error) {
+          copyError = error instanceof Error ? error.message : String(error);
+        }
+      }
+
       pendingSavePaths.delete(token);
-      return { saved: true, bytesWritten: pending.bytesWritten };
+      return {
+        saved: true,
+        bytesWritten: pending.bytesWritten,
+        copied,
+        copyError,
+        fileName: path.basename(pending.filePath),
+        renamed: pending.renamed === true,
+      };
     } catch (error) {
       await abortPendingSave(token, pending);
       throw new Error(saveErrorDetail(error, pending.filePath));

@@ -10,9 +10,11 @@ import {
   useState,
 } from 'react';
 import { AppLocale, DEFAULT_LOCALE, translate } from './i18n';
+import VersionStatus from './version-status';
 
 type Point = { x: number; y: number };
 export type VideoAnnotationType = 'rect' | 'arrow' | 'note' | 'draw';
+export type VideoOutputFormat = 'mp4' | 'gif';
 
 export type VideoAnnotation = {
   id: string;
@@ -90,6 +92,22 @@ type VideoDraft = {
   points: Point[];
 };
 type CompressionQuality = 'high' | 'balanced' | 'light';
+type TimelineResizeState = {
+  annotationId: string;
+  start: number;
+  pointerId: number;
+  timeline: HTMLDivElement;
+};
+
+type TimelineMoveState = {
+  annotationId: string;
+  start: number;
+  end: number;
+  pointerStartX: number;
+  pointerId: number;
+  timeline: HTMLDivElement;
+  didMove: boolean;
+};
 
 const VIDEO_TOOL_LABELS: Record<AppLocale, Record<VideoTool, string>> = {
   en: {
@@ -194,9 +212,12 @@ async function createLocalFfmpegResources() {
   return { baseUrl, wasmUrl: URL.createObjectURL(wasm) };
 }
 
-function videoSelectionPath(project: Pick<VideoProjectData, 'videoName'>) {
+function videoSelectionPath(
+  project: Pick<VideoProjectData, 'videoName'>,
+  outputFormat: VideoOutputFormat = 'mp4',
+) {
   const baseName = project.videoName.replace(/\.[^.]+$/, '') || 'video';
-  return 'media/selection-' + safeFileName(baseName) + '.mp4';
+  return 'media/selection-' + safeFileName(baseName) + '.' + outputFormat;
 }
 
 export function videoTrimBounds(project: Pick<VideoProjectData, 'duration' | 'trimStart' | 'trimEnd'>) {
@@ -207,9 +228,13 @@ export function videoTrimBounds(project: Pick<VideoProjectData, 'duration' | 'tr
   return { start, end: end > start ? end : duration, duration: Math.max(0, (end > start ? end : duration) - start) };
 }
 
-export function createVideoDeliveryProject(project: VideoProjectData, originalIncluded = false) {
+export function createVideoDeliveryProject(
+  project: VideoProjectData,
+  originalIncluded = false,
+  outputFormat: VideoOutputFormat = 'mp4',
+) {
   const bounds = videoTrimBounds(project);
-  const trimmedPath = videoSelectionPath(project);
+  const trimmedPath = videoSelectionPath(project, outputFormat);
   const annotations = project.annotations
     .filter((annotation) => annotation.end > bounds.start && annotation.start < bounds.end)
     .map((annotation) => ({
@@ -230,8 +255,8 @@ export function createVideoDeliveryProject(project: VideoProjectData, originalIn
     }));
   return {
     ...project,
-    videoName: safeFileName(project.videoName.replace(/\.[^.]+$/, '') || 'video') + '-selection.mp4',
-    videoType: 'video/mp4',
+    videoName: safeFileName(project.videoName.replace(/\.[^.]+$/, '') || 'video') + '-selection.' + outputFormat,
+    videoType: outputFormat === 'gif' ? 'image/gif' : 'video/mp4',
     duration: bounds.duration,
     sourcePath: trimmedPath,
     trimmedPath,
@@ -251,6 +276,7 @@ export async function encodeTrimmedVideo(
   start: number,
   end: number,
   onProgress?: (progress: number) => void,
+  outputFormat: VideoOutputFormat = 'mp4',
 ) {
   if (file.size >= 2 * 1024 * 1024 * 1024) {
     throw new Error('L’encodage local accepte des vidéos de moins de 2 Go.');
@@ -266,7 +292,7 @@ export async function encodeTrimmedVideo(
   });
   const extension = file.name.split('.').pop()?.replace(/[^a-z0-9]/gi, '') || 'video';
   const inputName = 'trim-input-' + createId() + '.' + extension;
-  const outputName = 'trim-output-' + createId() + '.mp4';
+  const outputName = 'trim-output-' + createId() + '.' + outputFormat;
   let wasmUrl: string | null = null;
   try {
     const resources = await createLocalFfmpegResources();
@@ -276,20 +302,31 @@ export async function encodeTrimmedVideo(
       wasmURL: wasmUrl,
     });
     await ffmpeg.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
+    const outputArgs = outputFormat === 'gif'
+      ? [
+          '-filter_complex',
+          '[0:v]split[source][paletteSource];[paletteSource]palettegen=stats_mode=diff[palette];[source][palette]paletteuse=dither=sierra2_4a[gif]',
+          '-map', '[gif]',
+          '-loop', '0',
+        ]
+      : [
+          '-map', '0:v:0',
+          '-map', '0:a?',
+          '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+          '-c:v', 'libx264',
+          '-preset', 'veryfast',
+          '-crf', '24',
+          '-pix_fmt', 'yuv420p',
+          '-c:a', 'aac',
+          '-b:a', '128k',
+          '-avoid_negative_ts', 'make_zero',
+          '-movflags', '+faststart',
+        ];
     const exitCode = await ffmpeg.exec([
       '-i', inputName,
       '-ss', start.toFixed(6),
       '-t', clipDuration.toFixed(6),
-      '-map', '0:v:0',
-      '-map', '0:a?',
-      '-c:v', 'libx264',
-      '-preset', 'veryfast',
-      '-crf', '24',
-      '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-avoid_negative_ts', 'make_zero',
-      '-movflags', '+faststart',
+      ...outputArgs,
       outputName,
     ]);
     if (exitCode !== 0) throw new Error('Le moteur vidéo a terminé avec le code ' + exitCode + '.');
@@ -297,7 +334,7 @@ export async function encodeTrimmedVideo(
     if (typeof output === 'string') throw new Error('La vidéo découpée générée est invalide.');
     const buffer = output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer;
     onProgress?.(100);
-    return new Blob([buffer], { type: 'video/mp4' });
+    return new Blob([buffer], { type: outputFormat === 'gif' ? 'image/gif' : 'video/mp4' });
   } finally {
     await ffmpeg.deleteFile(inputName).catch(() => undefined);
     await ffmpeg.deleteFile(outputName).catch(() => undefined);
@@ -555,6 +592,7 @@ export default function VideoAnnotator({
   locale,
   onLocaleChange,
 }: VideoWorkspaceProps) {
+  const isGifSource = file.type.toLowerCase() === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
   const t = (english: string, french: string) => translate(locale, english, french);
   const [originalSourceUrl] = useState(() => URL.createObjectURL(file));
   const [playbackUrl, setPlaybackUrl] = useState(originalSourceUrl);
@@ -582,6 +620,8 @@ export default function VideoAnnotator({
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1);
+  const [resizingAnnotationId, setResizingAnnotationId] = useState<string | null>(null);
+  const [movingAnnotationId, setMovingAnnotationId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState(() => translate(locale, 'Ready', 'Prêt'));
   const [compressionOpen, setCompressionOpen] = useState(false);
   const [compressionQuality, setCompressionQuality] = useState<CompressionQuality>('balanced');
@@ -605,6 +645,7 @@ export default function VideoAnnotator({
   const ffmpegRef = useRef<import('@ffmpeg/ffmpeg').FFmpeg | null>(null);
   const ffmpegWasmUrlRef = useRef<string | null>(null);
   const compressionCanceledRef = useRef(false);
+  const automaticGifPreviewStartedRef = useRef(false);
   const previewCanceledRef = useRef(false);
   const ffmpegOperationRef = useRef<'preview' | 'compression' | 'frame' | null>(null);
   const compatiblePreviewUrlRef = useRef<string | null>(null);
@@ -617,6 +658,9 @@ export default function VideoAnnotator({
   const viewPanRef = useRef<Point>({ x: 0, y: 0 });
   const viewPanDragRef = useRef<{ clientX: number; clientY: number; panX: number; panY: number } | null>(null);
   const onProjectChangeRef = useRef(onProjectChange);
+  const timelineResizeRef = useRef<TimelineResizeState | null>(null);
+  const timelineMoveRef = useRef<TimelineMoveState | null>(null);
+  const suppressTimelineClickRef = useRef(false);
 
   const selectedFrameStop = frameStops.find((stop) => stop.id === selectedFrameStopId) || null;
   const activeAnnotations = useMemo(
@@ -668,6 +712,15 @@ export default function VideoAnnotator({
   useEffect(() => {
     onProjectChangeRef.current = onProjectChange;
   }, [onProjectChange]);
+
+  useEffect(() => {
+    if (!isGifSource || automaticGifPreviewStartedRef.current) return;
+    automaticGifPreviewStartedRef.current = true;
+    setVideoError(t('Preparing the animated GIF for timeline playback…', 'Préparation du GIF animé pour la timeline…'));
+    createCompatiblePreview().catch(() => undefined);
+    // createCompatiblePreview is intentionally started once for this source file.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isGifSource]);
 
   useEffect(() => {
     viewZoomRef.current = viewZoom;
@@ -1421,7 +1474,7 @@ export default function VideoAnnotator({
         '-i', inputName,
         '-map', '0:v:0',
         '-map', '0:a?',
-        '-vf', 'scale=1920:-2:force_original_aspect_ratio=decrease',
+        '-vf', 'scale=1920:-2:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2',
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-crf', '25',
@@ -1496,14 +1549,7 @@ export default function VideoAnnotator({
       const qualityArgs: Record<CompressionQuality, string[]> = {
         high: ['-preset', 'medium', '-crf', '19'],
         balanced: ['-preset', 'veryfast', '-crf', '24'],
-        light: [
-          '-vf',
-          'scale=1280:-2:force_original_aspect_ratio=decrease',
-          '-preset',
-          'veryfast',
-          '-crf',
-          '30',
-        ],
+        light: ['-preset', 'veryfast', '-crf', '30'],
       };
       setCompressionStatus(t('Local compression in progress…', 'Compression locale en cours…'));
       const exitCode = await ffmpeg.exec([
@@ -1513,6 +1559,10 @@ export default function VideoAnnotator({
         '0:v:0',
         '-map',
         '0:a?',
+        '-vf',
+        compressionQuality === 'light'
+          ? 'scale=1280:-2:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2'
+          : 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
         '-c:v',
         'libx264',
         '-pix_fmt',
@@ -1560,6 +1610,140 @@ export default function VideoAnnotator({
     setCompressionStatus(t('Compression cancelled', 'Compression annulée'));
   }
 
+  function beginTimelineMove(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    annotation: VideoAnnotation,
+  ) {
+    if (!duration || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    const timeline = event.currentTarget.closest('.video-timeline');
+    if (!(timeline instanceof HTMLDivElement)) return;
+    event.stopPropagation();
+    timelineMoveRef.current = {
+      annotationId: annotation.id,
+      start: annotation.start,
+      end: annotation.end,
+      pointerStartX: event.clientX,
+      pointerId: event.pointerId,
+      timeline,
+      didMove: false,
+    };
+    suppressTimelineClickRef.current = false;
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {}
+    videoRef.current?.pause();
+    setIsPlaying(false);
+    setSelectedId(annotation.id);
+    setMovingAnnotationId(annotation.id);
+  }
+
+  function moveTimelineAnnotation(event: ReactPointerEvent<HTMLButtonElement>) {
+    const active = timelineMoveRef.current;
+    if (!active || active.pointerId !== event.pointerId || !duration) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = active.timeline.getBoundingClientRect();
+    if (!bounds.width) return;
+    const deltaPixels = event.clientX - active.pointerStartX;
+    const wasMoving = active.didMove;
+    if (Math.abs(deltaPixels) > 2) active.didMove = true;
+    if (!active.didMove) return;
+    if (!wasMoving) setSaveStatus(t('Moving annotation\u2026', 'D\u00e9placement de l\u2019annotation\u2026'));
+    const annotationDuration = Math.max(0, active.end - active.start);
+    const deltaTime = (deltaPixels / bounds.width) * duration;
+    const maximumStart = Math.max(0, duration - annotationDuration);
+    const nextStart = Math.max(0, Math.min(maximumStart, active.start + deltaTime));
+    const nextEnd = Math.min(duration, nextStart + annotationDuration);
+    setAnnotations((items) => items.map((annotation) =>
+      annotation.id === active.annotationId
+        ? { ...annotation, start: nextStart, end: nextEnd }
+        : annotation,
+    ));
+    if (active.didMove) {
+      if (videoRef.current) videoRef.current.currentTime = nextStart;
+      setCurrentTime(nextStart);
+    }
+  }
+
+  function endTimelineMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    const active = timelineMoveRef.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    timelineMoveRef.current = null;
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {}
+    setMovingAnnotationId(null);
+    if (active.didMove) {
+      suppressTimelineClickRef.current = true;
+      window.setTimeout(() => {
+        suppressTimelineClickRef.current = false;
+      }, 0);
+      setSaveStatus(t('Annotation moved on the timeline', 'Annotation d\u00e9plac\u00e9e sur la timeline'));
+    }
+  }
+
+  function beginTimelineResize(
+    event: ReactPointerEvent<HTMLSpanElement>,
+    annotation: VideoAnnotation,
+  ) {
+    if (!duration) return;
+    const timeline = event.currentTarget.closest('.video-timeline');
+    if (!(timeline instanceof HTMLDivElement)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    timelineResizeRef.current = {
+      annotationId: annotation.id,
+      start: annotation.start,
+      pointerId: event.pointerId,
+      timeline,
+    };
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {}
+    videoRef.current?.pause();
+    if (videoRef.current) videoRef.current.currentTime = annotation.end;
+    setIsPlaying(false);
+    setCurrentTime(annotation.end);
+    setSelectedId(annotation.id);
+    setResizingAnnotationId(annotation.id);
+    setSaveStatus(t('Drag the right edge to adjust the duration', 'Glisse le bord droit pour ajuster la dur\u00e9e'));
+  }
+
+  function moveTimelineResize(event: ReactPointerEvent<HTMLSpanElement>) {
+    const active = timelineResizeRef.current;
+    if (!active || active.pointerId !== event.pointerId || !duration) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = active.timeline.getBoundingClientRect();
+    if (!bounds.width) return;
+    const rawEnd = ((event.clientX - bounds.left) / bounds.width) * duration;
+    const minimumEnd = Math.min(duration, active.start + 0.05);
+    const nextEnd = Math.max(minimumEnd, Math.min(duration, rawEnd));
+    setAnnotations((items) => items.map((annotation) =>
+      annotation.id === active.annotationId ? { ...annotation, end: nextEnd } : annotation,
+    ));
+    if (videoRef.current) videoRef.current.currentTime = nextEnd;
+    setCurrentTime(nextEnd);
+  }
+
+  function endTimelineResize(event: ReactPointerEvent<HTMLSpanElement>) {
+    const active = timelineResizeRef.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    timelineResizeRef.current = null;
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {}
+    setResizingAnnotationId(null);
+    setSaveStatus(t('Annotation duration updated', 'Dur\u00e9e de l\u2019annotation mise \u00e0 jour'));
+  }
+
   function timelineSeek(event: ReactPointerEvent<HTMLDivElement>) {
     const rect = event.currentTarget.getBoundingClientRect();
     seek(((event.clientX - rect.left) / rect.width) * duration);
@@ -1572,7 +1756,11 @@ export default function VideoAnnotator({
           {onClose && <button className="video-back" onClick={onClose} aria-label={t('Back to images', 'Revenir aux images')}>←</button>}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img className="brand-mark" src="/cyannota-logo.png" alt="" />
-          <div><strong>{t('CyAnnota Video', 'CyAnnota Vidéo')}</strong><span>{t('Local timed annotations', 'Annotations temporelles locales')}</span></div>
+          <div>
+            <strong>{t('CyAnnota Video', 'CyAnnota Vidéo')}</strong>
+            <span className="brand-subtitle">{t('Local timed annotations', 'Annotations temporelles locales')}</span>
+            <VersionStatus locale={locale} />
+          </div>
         </div>
         <label className="project-title video-title">
           <span className="status-dot" />
@@ -1668,7 +1856,13 @@ export default function VideoAnnotator({
                 src={playbackUrl}
                 preload="metadata"
                 onLoadedMetadata={handleLoadedMetadata}
-                onError={() => setVideoError(hasCompatiblePreview ? t('The converted preview remains unreadable.', 'L’aperçu converti reste illisible.') : t('This MP4 codec cannot be played directly.', 'Le codec de ce MP4 ne peut pas être lu directement.'))}
+                onError={() => setVideoError(
+                  hasCompatiblePreview
+                    ? t('The converted preview remains unreadable.', 'L’aperçu converti reste illisible.')
+                    : isGifSource
+                      ? t('The animated GIF preview could not be prepared.', 'L’aperçu du GIF animé n’a pas pu être préparé.')
+                      : t('This video format cannot be played directly.', 'Ce format vidéo ne peut pas être lu directement.'),
+                )}
                 onTimeUpdate={(event) => handleVideoTimeUpdate(event.currentTarget)}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
@@ -1725,7 +1919,7 @@ export default function VideoAnnotator({
                   </>
                 ) : !hasCompatiblePreview ? (
                   <>
-                    <span>{t('CyAnnota can create a local H.264 playback copy. The Discord original will remain untouched in the project.', 'CyAnnota peut créer localement une copie de lecture H.264. L’original Discord restera intact dans le projet.')}</span>
+                    <span>{t('CyAnnota can create a local H.264 playback copy. The original video or GIF remains untouched in the project.', 'CyAnnota peut créer localement une copie de lecture H.264. La vidéo ou le GIF d’origine reste intact dans le projet.')}</span>
                     <button className="button primary compact" onClick={() => createCompatiblePreview().catch(() => undefined)}>{t('Create compatible preview', 'Créer un aperçu compatible')}</button>
                   </>
                 ) : (
@@ -1775,18 +1969,42 @@ export default function VideoAnnotator({
                   {annotations.map((annotation, index) => (
                     <button
                       key={annotation.id}
-                      className={'video-clip ' + (annotation.id === selectedId ? 'selected' : '')}
+                      className={'video-clip' + (annotation.id === selectedId ? ' selected' : '') + (annotation.id === resizingAnnotationId ? ' resizing' : '') + (annotation.id === movingAnnotationId ? ' moving' : '')}
                       style={{
                         left: duration ? (annotation.start / duration) * 100 + '%' : '0%',
                         width: duration ? Math.max(0.6, ((annotation.end - annotation.start) / duration) * 100) + '%' : '1%',
                         top: (index % 3) * 25 + 3,
                         background: annotation.color,
                       }}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={() => { setSelectedId(annotation.id); seek(annotation.start); }}
-                      title={formatTime(annotation.start, true) + ' — ' + annotation.message}
+                      onPointerDown={(event) => beginTimelineMove(event, annotation)}
+                      onPointerMove={moveTimelineAnnotation}
+                      onPointerUp={endTimelineMove}
+                      onPointerCancel={endTimelineMove}
+                      onLostPointerCapture={endTimelineMove}
+                      onClick={(event) => {
+                        if (suppressTimelineClickRef.current) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          suppressTimelineClickRef.current = false;
+                          return;
+                        }
+                        setSelectedId(annotation.id);
+                        seek(annotation.start);
+                      }}
+                      title={formatTime(annotation.start, true) + ' \u2192 ' + formatTime(annotation.end, true) + ' \u00b7 ' + t('Drag to move \u00b7 right edge to change duration', 'Glisse pour d\u00e9placer \u00b7 bord droit pour changer la dur\u00e9e')}
                     >
                       {String(index + 1).padStart(2, '0')}
+                      <span
+                        className="video-clip-resize-handle"
+                        aria-hidden="true"
+                        title={t('Drag to change annotation duration', 'Glisser pour changer la dur\u00e9e de l\u2019annotation')}
+                        onPointerDown={(event) => beginTimelineResize(event, annotation)}
+                        onPointerMove={moveTimelineResize}
+                        onPointerUp={endTimelineResize}
+                        onPointerCancel={endTimelineResize}
+                        onLostPointerCapture={endTimelineResize}
+                        onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                      />
                     </button>
                   ))}
                   {frameStops.map((stop, index) => (
