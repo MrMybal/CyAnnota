@@ -8,6 +8,7 @@ import {
   translate,
   type AppLocale,
 } from './i18n';
+import VersionStatus from './version-status';
 import VideoAnnotator, {
   buildVideoPrompt,
   createVideoDeliveryProject,
@@ -16,6 +17,7 @@ import VideoAnnotator, {
   videoFrameStopAnnotatedFileName,
   videoFrameStopFileName,
   videoTrimBounds,
+  type VideoOutputFormat,
   type VideoProjectData,
 } from './video-annotator';
 import {
@@ -471,14 +473,29 @@ function dataUrlBytes(source: string, label: string) {
 type PreparedFileSave = {
   name: string;
   desktopToken?: string;
+  desktopFileName?: string;
+  desktopRenamed?: boolean;
 };
 
+type SaveBlobResult = {
+  saved: boolean;
+  copied: boolean;
+  fileName: string;
+  renamed: boolean;
+  copyError?: string;
+
+};
 async function prepareFileSave(name: string): Promise<PreparedFileSave | null> {
   if (!window.cyAnnotaDesktop) return { name };
 
   const result = await window.cyAnnotaDesktop.chooseSaveFile({ name });
   if (result.canceled || !result.token) return null;
-  return { name, desktopToken: result.token };
+  return {
+    name,
+    desktopToken: result.token,
+    desktopFileName: result.fileName,
+    desktopRenamed: result.renamed,
+  };
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer) {
@@ -512,7 +529,22 @@ async function showSaveFailure(message: string, error: unknown) {
   window.alert(message + '\n\nDétail technique : ' + detail);
 }
 
-async function savePreparedBlob(blob: Blob, prepared: PreparedFileSave) {
+async function savePreparedBlob(
+  blob: Blob,
+  prepared: PreparedFileSave,
+  options: { copyToClipboard?: boolean } = {},
+): Promise<SaveBlobResult> {
+async function copyBlobToClipboard(blob: Blob, name: string) {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    throw new Error('Ce navigateur ne permet pas de copier un fichier dans le presse-papiers.');
+  }
+  const mimeType = blob.type || 'application/octet-stream';
+  const file = new File([blob], name, { type: mimeType, lastModified: Date.now() });
+  await navigator.clipboard.write([
+    new ClipboardItem({ [mimeType]: file }, { presentationStyle: 'attachment' }),
+  ]);
+}
+
   if (prepared.desktopToken) {
     if (!window.cyAnnotaDesktop) throw new Error('Pont de sauvegarde desktop indisponible');
     if (!blob.size) throw new Error('Le fichier généré est vide.');
@@ -530,11 +562,20 @@ async function savePreparedBlob(blob: Blob, prepared: PreparedFileSave) {
           throw new Error(`Écriture incomplète : ${result.written} octets sur ${slice.size}.`);
         }
       }
-      const result = await desktop.finishSaveFile({ token });
+      const result = await desktop.finishSaveFile({
+        token,
+        copyToClipboard: options.copyToClipboard === true,
+      });
       if (result.bytesWritten !== blob.size) {
         throw new Error(`Fichier incomplet : ${result.bytesWritten} octets sur ${blob.size}.`);
       }
-      return result.saved;
+      return {
+        saved: result.saved,
+        copied: result.copied,
+        fileName: result.fileName || prepared.desktopFileName || prepared.name,
+        renamed: result.renamed || prepared.desktopRenamed === true,
+        copyError: result.copyError,
+      };
     } catch (error) {
       await desktop.abortSaveFile({ token }).catch(() => undefined);
       throw error;
@@ -547,13 +588,52 @@ async function savePreparedBlob(blob: Blob, prepared: PreparedFileSave) {
   anchor.download = prepared.name;
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  return true;
+  let copied = false;
+  let copyError: string | undefined;
+  if (options.copyToClipboard) {
+    try {
+      await copyBlobToClipboard(blob, prepared.name);
+      copied = true;
+    } catch (error) {
+      copyError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  return { saved: true, copied, fileName: prepared.name, renamed: false, copyError };
 }
 
 async function downloadBlob(blob: Blob, name: string) {
   const prepared = await prepareFileSave(name);
   if (!prepared) return false;
-  return savePreparedBlob(blob, prepared);
+  return (await savePreparedBlob(blob, prepared)).saved;
+}
+
+const VIDEO_FILE_EXTENSIONS = new Set(['mp4', 'webm', 'ogg', 'mov', 'm4v', 'gif']);
+
+function fileExtension(file: Pick<File, 'name'>) {
+  return file.name.split('.').pop()?.toLowerCase() || '';
+}
+
+function isGifFile(file: Pick<File, 'name' | 'type'>) {
+  return file.type.toLowerCase() === 'image/gif' || fileExtension(file) === 'gif';
+}
+
+function isVideoMediaFile(file: Pick<File, 'name' | 'type'>) {
+  return file.type.startsWith('video/') || isGifFile(file) || VIDEO_FILE_EXTENSIONS.has(fileExtension(file));
+}
+
+function isStillImageFile(file: Pick<File, 'name' | 'type'>) {
+  return !isGifFile(file) && (
+    file.type.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp'].includes(fileExtension(file))
+  );
+}
+
+function clipboardMediaName(mimeType: string) {
+  const extension = mimeType === 'image/jpeg'
+    ? 'jpg'
+    : mimeType === 'video/quicktime'
+      ? 'mov'
+      : mimeType.split('/')[1]?.replace('x-', '') || 'bin';
+  return 'media-colle-' + new Date().toISOString().replace(/[:.]/g, '-') + '.' + extension;
 }
 
 function readAsDataUrl(file: File) {
@@ -629,6 +709,8 @@ export default function Home() {
   const [exportAudience, setExportAudience] = useState<ExportAudience>('ai');
   const [exportContainer, setExportContainer] = useState<ExportContainer>('zip');
   const [includeOriginalVideosInExport, setIncludeOriginalVideosInExport] = useState(false);
+  const [copyExportToClipboard, setCopyExportToClipboard] = useState(true);
+  const [preserveGifFormatInExport, setPreserveGifFormatInExport] = useState(false);
   const [exportProgressLabel, setExportProgressLabel] = useState('');
   const [isExporting, setIsExporting] = useState(false);
   const [hasLocalDraft, setHasLocalDraft] = useState(false);
@@ -796,9 +878,9 @@ export default function Home() {
           const lowerName = item.name.toLowerCase();
           if (lowerName.endsWith('.cyannota') || lowerName.endsWith('.zip')) {
             await openProjectFile(file);
-          } else if (item.type.startsWith('video/') || /\.(mp4|webm|ogg|mov|m4v)$/.test(lowerName)) {
+          } else if (isVideoMediaFile(file)) {
             loadVideoFile(file);
-          } else if (item.type.startsWith('image/') || /\.(png|jpe?g|webp)$/.test(lowerName)) {
+          } else if (isStillImageFile(file)) {
             await loadImageFile(file);
           }
         }
@@ -978,7 +1060,11 @@ export default function Home() {
     if (exportOpen) {
       setExportPrompt(
         activeTab?.kind === 'video'
-          ? buildVideoPrompt(createVideoDeliveryProject(activeTab.project, includeOriginalVideosInExport), nextLocale)
+          ? buildVideoPrompt(createVideoDeliveryProject(
+              activeTab.project,
+              includeOriginalVideosInExport,
+              preserveGifFormatInExport && isGifFile(activeTab.file) ? 'gif' : 'mp4',
+            ), nextLocale)
           : buildPrompt(projectData(), nextLocale),
       );
     }
@@ -2194,9 +2280,7 @@ export default function Home() {
       showImportNotice(t('The media linked to ', 'Le média lié à ') + integrationBridgeRef.current.providerLabel + t(' cannot be replaced in this session', ' ne peut pas être remplacé dans cette session'));
       return false;
     }
-    const extension = file.name.split('.').pop()?.toLowerCase();
-    const supportedExtension = ['mp4', 'webm', 'ogg', 'mov', 'm4v'].includes(extension || '');
-    if (!file.type.startsWith('video/') && !supportedExtension) return false;
+    if (!isVideoMediaFile(file)) return false;
 
     const videoProject: VideoProjectData = project
       ? structuredClone(project)
@@ -2261,7 +2345,9 @@ export default function Home() {
       showImportNotice(t('The media linked to ', 'Le média lié à ') + integrationBridgeRef.current.providerLabel + t(' cannot be replaced in this session', ' ne peut pas être remplacé dans cette session'));
       return false;
     }
-    if (!file || !file.type.startsWith('image/')) return false;
+    if (!file) return false;
+    if (isGifFile(file)) return loadVideoFile(file);
+    if (!isStillImageFile(file)) return false;
     const dataUrl = await readAsDataUrl(file);
     const nextImageName =
       file.name ||
@@ -2291,27 +2377,38 @@ export default function Home() {
     return true;
   }
 
-  async function pasteImageFromClipboard() {
+  async function importClipboardMediaFile(file: File) {
+    if (isVideoMediaFile(file)) return loadVideoFile(file);
+    if (isStillImageFile(file)) return loadImageFile(file, 'clipboard');
+    return false;
+  }
+
+  async function pasteMediaFromClipboard() {
     try {
+      const desktopItems = await window.cyAnnotaDesktop?.readClipboardFiles?.();
+      for (const item of desktopItems || []) {
+        const file = new File([item.bytes], item.name, {
+          type: item.type || 'application/octet-stream',
+          lastModified: Date.now(),
+        });
+        if (await importClipboardMediaFile(file)) return;
+      }
+
       if (!navigator.clipboard || !('read' in navigator.clipboard)) {
-        showImportNotice(t('Use Ctrl+V to paste the image', 'Utilise Ctrl+V pour coller l’image'));
+        showImportNotice(t('Use Ctrl+V to paste an image, video, or GIF', 'Utilise Ctrl+V pour coller une image, une vidéo ou un GIF'));
         return;
       }
       const clipboardItems = await navigator.clipboard.read();
       for (const item of clipboardItems) {
-        const imageType = item.types.find((type) => type.startsWith('image/'));
-        if (!imageType) continue;
-        const blob = await item.getType(imageType);
-        const extension = imageType === 'image/jpeg' ? 'jpg' : imageType.split('/')[1] || 'png';
-        const file = new File(
-          [blob],
-          'capture-collee-' + new Date().toISOString().replace(/[:.]/g, '-') + '.' + extension,
-          { type: imageType },
-        );
-        await loadImageFile(file, 'clipboard');
-        return;
+        const mediaType =
+          item.types.find((type) => type.startsWith('video/') || type === 'image/gif') ||
+          item.types.find((type) => type.startsWith('image/'));
+        if (!mediaType) continue;
+        const blob = await item.getType(mediaType);
+        const file = new File([blob], clipboardMediaName(mediaType), { type: mediaType });
+        if (await importClipboardMediaFile(file)) return;
       }
-      showImportNotice(t('The clipboard does not contain an image', 'Le presse-papiers ne contient pas d’image'));
+      showImportNotice(t('The clipboard does not contain a supported image, video, or GIF', 'Le presse-papiers ne contient aucune image, vidéo ou GIF compatible'));
     } catch {
       showImportNotice(t('Allow clipboard access or use Ctrl+V', 'Autorise le presse-papiers ou utilise Ctrl+V'));
     }
@@ -2319,29 +2416,39 @@ export default function Home() {
 
   useEffect(() => {
     function handlePaste(event: ClipboardEvent) {
-      const imageFiles = Array.from(event.clipboardData?.items || [])
-        .filter((item) => item.type.startsWith('image/'))
-        .map((item) => item.getAsFile())
-        .filter((file): file is File => Boolean(file));
-      if (!imageFiles.length) return;
-
       const target = event.target instanceof HTMLElement ? event.target : null;
+      const mediaFiles = Array.from(event.clipboardData?.items || [])
+        .map((item) => item.kind === 'file' ? item.getAsFile() : null)
+        .filter((file): file is File => Boolean(file))
+        .filter((file) => isVideoMediaFile(file) || isStillImageFile(file));
+
+      if (!mediaFiles.length) {
+        if (target?.matches('input, textarea, select, [contenteditable="true"]')) return;
+        pasteMediaFromClipboard().catch(() =>
+          showImportNotice(t('Unable to paste this media', 'Impossible de coller ce média')),
+        );
+        return;
+      }
+
       const pasteAsReference = Boolean(target?.closest('[data-reference-paste="true"]'));
+      const referenceImages = mediaFiles.filter(isStillImageFile);
       event.preventDefault();
-      if (pasteAsReference && selectedId) {
-        addReferences(imageFiles, selectedId).catch(() =>
+      if (pasteAsReference && selectedId && referenceImages.length) {
+        addReferences(referenceImages, selectedId).catch(() =>
           showImportNotice(t('Unable to paste this reference', 'Impossible de coller cette référence')),
         );
         return;
       }
 
-      loadImageFile(imageFiles[0], 'clipboard').catch(() =>
-        showImportNotice(t('Unable to paste this image', 'Impossible de coller cette image')),
+      importClipboardMediaFile(mediaFiles[0]).catch(() =>
+        showImportNotice(t('Unable to paste this media', 'Impossible de coller ce média')),
       );
     }
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [imageSource, selectedId]);
+    // The listener is refreshed for the active tab; helpers deliberately use that render closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId, imageSource, selectedId]);
 
   function hasDraggedMedia(dataTransfer: DataTransfer) {
     return (
@@ -2351,7 +2458,7 @@ export default function Home() {
           (!item.type || item.type.startsWith('image/') || item.type.startsWith('video/')),
       ) ||
       Array.from(dataTransfer.files).some(
-        (file) => file.type.startsWith('image/') || file.type.startsWith('video/'),
+        (file) => isVideoMediaFile(file) || isStillImageFile(file),
       )
     );
   }
@@ -2372,20 +2479,14 @@ export default function Home() {
     event.preventDefault();
     setIsDraggingImage(false);
     const files = Array.from(event.dataTransfer.files);
-    const videoFile = files.find((file) => {
-      const extension = file.name.split('.').pop()?.toLowerCase();
-      return (
-        file.type.startsWith('video/') ||
-        ['mp4', 'webm', 'ogg', 'mov', 'm4v'].includes(extension || '')
-      );
-    });
+    const videoFile = files.find(isVideoMediaFile);
     if (videoFile) {
       loadVideoFile(videoFile);
       return;
     }
-    const imageFile = files.find((file) => file.type.startsWith('image/'));
+    const imageFile = files.find(isStillImageFile);
     if (!imageFile) {
-      showImportNotice(t('Drop a PNG, JPG, WebP image or an MP4/WebM video', 'Dépose une image PNG, JPG, WebP ou une vidéo MP4/WebM'));
+      showImportNotice(t('Drop a PNG, JPG, WebP image, video, or animated GIF', 'Dépose une image PNG, JPG, WebP, une vidéo ou un GIF animé'));
       return;
     }
     loadImageFile(imageFile).catch(() => showImportNotice(t('Unable to import this image', 'Impossible d’importer cette image')));
@@ -2816,9 +2917,17 @@ export default function Home() {
     ].join('\n');
   }
 
+  function videoOutputFormat(tab: VideoBoardTab): VideoOutputFormat {
+    return preserveGifFormatInExport && isGifFile(tab.file) ? 'gif' : 'mp4';
+  }
+
   function openExport() {
     const prompt = activeTab?.kind === 'video'
-      ? buildVideoPrompt(createVideoDeliveryProject(activeTab.project, includeOriginalVideosInExport), locale)
+      ? buildVideoPrompt(createVideoDeliveryProject(
+          activeTab.project,
+          includeOriginalVideosInExport,
+          videoOutputFormat(activeTab),
+        ), locale)
       : buildPrompt(projectData(), locale);
     setExportPrompt(withWorkspaceInstructions(prompt, locale));
     setExportOpen(true);
@@ -2938,7 +3047,12 @@ export default function Home() {
     });
   }
 
-  async function encodeVideoTabForPackage(tab: VideoBoardTab, index: number, total: number) {
+  async function encodeVideoTabForPackage(
+    tab: VideoBoardTab,
+    index: number,
+    total: number,
+    outputFormat: VideoOutputFormat,
+  ) {
     const bounds = videoTrimBounds(tab.project);
     if (bounds.duration < 0.05) throw new Error('La découpe vidéo doit conserver au moins 0,05 seconde.');
     const signature = [
@@ -2947,6 +3061,7 @@ export default function Home() {
       tab.file.lastModified,
       bounds.start.toFixed(6),
       bounds.end.toFixed(6),
+      outputFormat,
     ].join(':');
     const cached = encodedVideoCacheRef.current.get(tab.id);
     if (cached?.signature === signature) {
@@ -2956,11 +3071,17 @@ export default function Home() {
     const prefix = 'Vidéo ' + (index + 1) + '/' + total + ' · ';
     setExportProgressLabel(prefix + 'chargement du moteur local…');
     setSaveStatus(prefix + 'encodage de la découpe…');
-    const blob = await encodeTrimmedVideo(tab.file, bounds.start, bounds.end, (progress) => {
-      const label = prefix + 'encodage ' + progress + '%';
-      setExportProgressLabel(label);
-      setSaveStatus(label);
-    });
+    const blob = await encodeTrimmedVideo(
+      tab.file,
+      bounds.start,
+      bounds.end,
+      (progress) => {
+        const label = prefix + 'encodage ' + outputFormat.toUpperCase() + ' · ' + progress + '%';
+        setExportProgressLabel(label);
+        setSaveStatus(label);
+      },
+      outputFormat,
+    );
     encodedVideoCacheRef.current.set(tab.id, { signature, blob });
     return blob;
   }
@@ -3101,6 +3222,7 @@ export default function Home() {
     delivery: boolean;
     includePrompt: boolean;
     container: ExportContainer;
+    copyToClipboard?: boolean;
   }) {
     const workspaceTabs = saveActiveTab(tabs);
     const exportableTabs = workspaceTabs.filter(
@@ -3152,7 +3274,7 @@ export default function Home() {
       packagedVideoProjects.set(
         tab.id,
         isDeliveryExport
-          ? createVideoDeliveryProject(tab.project, includeOriginalVideos)
+          ? createVideoDeliveryProject(tab.project, includeOriginalVideos, videoOutputFormat(tab))
           : createVideoSaveProject(tab.project),
       );
     });
@@ -3276,7 +3398,12 @@ export default function Home() {
               options.includePrompt && options.delivery && tab.id === activeTabId && exportPrompt
                 ? exportPrompt
                 : generatedPrompt;
-            const trimmedVideo = await encodeVideoTabForPackage(tab, videoIndex, totalVideos);
+            const trimmedVideo = await encodeVideoTabForPackage(
+              tab,
+              videoIndex,
+              totalVideos,
+              packagedProject.videoType === 'image/gif' ? 'gif' : 'mp4',
+            );
             videoIndex += 1;
             await addVideoProjectToZip(
               zip,
@@ -3314,15 +3441,39 @@ export default function Home() {
         },
         (metadata) => setExportProgressLabel(t('Compressing ', 'Compression du ') + containerLabel + ' · ' + Math.round(metadata.percent) + '%'),
       );
-      const saved = await savePreparedBlob(archive, preparedSave);
+      const saveResult = await savePreparedBlob(archive, preparedSave, {
+        copyToClipboard: options.copyToClipboard === true,
+      });
+      const saved = saveResult.saved;
+      const renamedLabel = saveResult.renamed
+        ? t(' · renamed to ', ' · renommé en ') + saveResult.fileName
+        : '';
+      const clipboardLabel = options.copyToClipboard
+        ? saveResult.copied
+          ? t(' · copied to clipboard', ' · copié dans le presse-papiers')
+          : t(' · clipboard unavailable', ' · presse-papiers indisponible')
+        : '';
       setSaveStatus(
-        saved
+        (saved
           ? options.delivery
             ? t('Export ', 'Export ') + (options.includePrompt ? t('AI', 'IA') : t('Human', 'Humain')) + t(' saved', ' enregistré')
             : t('CyAnnota project saved with sources', 'Projet CyAnnota enregistré avec les sources')
+          : t('Save cancelled', 'Enregistrement annulé')) +
+        (saved ? renamedLabel + clipboardLabel : ''),
+      );
+      setExportProgressLabel(
+        saved
+          ? saveResult.copied
+            ? t('Package saved and copied', 'Paquet enregistré et copié')
+            : t('Package saved', 'Paquet enregistré')
           : t('Save cancelled', 'Enregistrement annulé'),
       );
-      setExportProgressLabel(saved ? t('Package saved', 'Paquet enregistré') : t('Save cancelled', 'Enregistrement annulé'));
+      if (saved && options.copyToClipboard && !saveResult.copied) {
+        showImportNotice(
+          t('File saved, but the browser refused clipboard file access.', 'Fichier enregistré, mais le navigateur a refusé la copie du fichier.') +
+          (saveResult.copyError ? ' ' + saveResult.copyError : ''),
+        );
+      }
       return saved;
     } catch (error) {
       const message = error instanceof Error ? error.message : t('unknown error', 'erreur inconnue');
@@ -3391,6 +3542,9 @@ export default function Home() {
       0,
     );
     const videoCount = tabs.filter((tab) => tab.kind === 'video').length;
+    const gifCount = tabs.filter(
+      (tab) => tab.kind === 'video' && isGifFile(tab.file),
+    ).length;
     const frameStopCount = tabs.reduce(
       (count, tab) =>
         count +
@@ -3490,6 +3644,32 @@ export default function Home() {
               <span><strong>{t('Also include original videos', 'Inclure aussi les vidéos originales')}</strong><small>{t('Larger, but useful when the recipient needs the complete source capture.', 'Plus lourd, mais utile si le destinataire doit retrouver toute la capture source.')}</small></span>
             </label>
           )}
+          {gifCount > 0 && (
+            <label className="export-original-option">
+              <input
+                type="checkbox"
+                checked={preserveGifFormatInExport}
+                disabled={isExporting}
+                onChange={(event) => setPreserveGifFormatInExport(event.target.checked)}
+              />
+              <span>
+                <strong>{t('Export animated GIFs as GIF', 'Exporter les GIF animés au format GIF')}</strong>
+                <small>{t('Keeps a true animated GIF in the package. MP4 remains recommended for a lighter file and smoother playback.', 'Conserve un vrai GIF animé dans le paquet. Le MP4 reste recommandé pour un fichier plus léger et une lecture plus fluide.')}</small>
+              </span>
+            </label>
+          )}
+          <label className="export-original-option">
+            <input
+              type="checkbox"
+              checked={copyExportToClipboard}
+              disabled={isExporting}
+              onChange={(event) => setCopyExportToClipboard(event.target.checked)}
+            />
+            <span>
+              <strong>{t('Copy exported file to clipboard', 'Copier le fichier exporté dans le presse-papiers')}</strong>
+              <small>{t('Desktop: paste the saved file directly into Discord or Explorer. Web support depends on the browser.', 'Bureau : colle directement le fichier enregistré dans Discord ou l’Explorateur. Sur le Web, cela dépend du navigateur.')}</small>
+            </span>
+          </label>
             {isExporting && <div className="export-encoding-status"><span className="status-dot" /><strong>{exportProgressLabel || t('Local encoding in progress…', 'Encodage local en cours…')}</strong></div>}
 
           <footer className="modal-actions">
@@ -3504,6 +3684,7 @@ export default function Home() {
               onClick={() => downloadPackage({
                 delivery: true,
                 includePrompt: exportAudience === 'ai',
+                copyToClipboard: copyExportToClipboard,
                 container: exportContainer,
               }).catch(() => undefined)}
               disabled={isExporting}
@@ -3626,7 +3807,7 @@ export default function Home() {
           ref={videoInputRef}
           hidden
           type="file"
-          accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogg,.mov,.m4v"
+          accept="video/mp4,video/webm,video/ogg,video/quicktime,image/gif,.mp4,.webm,.ogg,.mov,.m4v,.gif"
           onChange={(event: ChangeEvent<HTMLInputElement>) => {
             loadVideoFile(event.target.files?.[0]);
             event.target.value = '';
@@ -3656,7 +3837,8 @@ export default function Home() {
           <img className="brand-mark" src="/cyannota-logo.png" alt="" />
           <div>
             <strong>CyAnnota</strong>
-            <span>{t('Interface corrections', 'Corrections d’interface')}</span>
+            <span className="brand-subtitle">{t('Image and video annotations', 'Annotations image et vidéo')}</span>
+            <VersionStatus locale={locale} />
           </div>
         </div>
 
@@ -3738,7 +3920,7 @@ export default function Home() {
           ref={videoInputRef}
           hidden
           type="file"
-          accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogg,.mov,.m4v"
+          accept="video/mp4,video/webm,video/ogg,video/quicktime,image/gif,.mp4,.webm,.ogg,.mov,.m4v,.gif"
           onChange={(event: ChangeEvent<HTMLInputElement>) => {
             loadVideoFile(event.target.files?.[0]);
             event.target.value = '';
@@ -3841,7 +4023,7 @@ export default function Home() {
                 <div className="drop-icon">⌁</div>
                 <p className="eyebrow">{t('NEW BOARD', 'NOUVELLE PLANCHE')}</p>
                 <h1>{t('Drop an image or video', 'Dépose une image ou une vidéo')}</h1>
-                <p>{t('PNG, JPG, WebP, MP4, or WebM — every file remains on this computer.', 'PNG, JPG, WebP, MP4 ou WebM — tous les fichiers restent sur cet ordinateur.')}</p>
+                <p>{t('PNG, JPG, WebP, video, or animated GIF — every file remains on this computer.', 'PNG, JPG, WebP, vidéo ou GIF animé — tous les fichiers restent sur cet ordinateur.')}</p>
                 <div className="import-actions">
                   <button className="button primary large" onClick={() => imageInputRef.current?.click()}>
                     {t('Choose an image', 'Choisir une image')}
@@ -3849,11 +4031,11 @@ export default function Home() {
                   <button className="button ghost large" onClick={() => videoInputRef.current?.click()}>
                     {t('Choose a video', 'Choisir une vidéo')}
                   </button>
-                  <button className="button ghost large" onClick={() => pasteImageFromClipboard().catch(() => undefined)}>
-                    {t('Paste image', 'Coller l’image')}
+                  <button className="button ghost large" onClick={() => pasteMediaFromClipboard().catch(() => undefined)}>
+                    {t('Paste media', 'Coller un média')}
                   </button>
                 </div>
-                <span>{t('or drag and drop a file · Ctrl+V works for images', 'ou glisse-dépose un fichier · Ctrl+V fonctionne pour les images')}</span>
+                <span>{t('or drag and drop a file · Ctrl+V works for images, videos, and GIFs', 'ou glisse-dépose un fichier · Ctrl+V fonctionne pour les images, vidéos et GIF')}</span>
                 {hasLocalDraft && (
                   <button className="text-button" onClick={() => resumeDraft().catch(() => undefined)}>
                     {t('Resume last project', 'Reprendre le dernier projet')}
@@ -3885,7 +4067,7 @@ export default function Home() {
             <span>{annotations.length} {annotations.length === 1 ? t('correction', 'correction') : t('corrections', 'corrections')}</span>
             <span>{imageSize.width ? imageSize.width + ' × ' + imageSize.height + t(' px · Wheel: zoom · right click: move', ' px · Molette : zoom · clic droit : déplacer') : t('No image', 'Aucune image')}</span>
             <div className="zoom-controls footer-zoom-controls">
-              <button className="paste-shortcut" onClick={() => pasteImageFromClipboard().catch(() => undefined)}>
+              <button className="paste-shortcut" onClick={() => pasteMediaFromClipboard().catch(() => undefined)}>
                 {t('Paste', 'Coller')} <kbd>Ctrl+V</kbd>
               </button>
               <i className="zoom-divider" />

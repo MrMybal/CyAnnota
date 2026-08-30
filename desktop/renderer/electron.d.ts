@@ -5,7 +5,17 @@ declare global {
     cyAnnotaDesktop?: {
       chooseSaveFile(input: {
         name: string;
-      }): Promise<{ canceled: boolean; token?: string }>;
+      }): Promise<{
+        canceled: boolean;
+        token?: string;
+        fileName?: string;
+        renamed?: boolean;
+      }>;
+      readClipboardFiles(): Promise<Array<{
+        name: string;
+        type: string;
+        bytes: ArrayBuffer;
+      }>>;
       beginSaveFile(input: {
         token: string;
       }): Promise<{ started: boolean }>;
@@ -15,7 +25,15 @@ declare global {
       }): Promise<{ written: number }>;
       finishSaveFile(input: {
         token: string;
-      }): Promise<{ saved: boolean; bytesWritten: number }>;
+        copyToClipboard?: boolean;
+      }): Promise<{
+        saved: boolean;
+        bytesWritten: number;
+        copied: boolean;
+        copyError?: string;
+        fileName?: string;
+        renamed?: boolean;
+      }>;
       abortSaveFile(input: {
         token: string;
       }): Promise<{ aborted: boolean }>;

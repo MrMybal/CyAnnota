@@ -1,6 +1,6 @@
 {
   "name": "cyannota-desktop",
-  "version": "0.3.7",
+  "version": "0.3.9",
   "license": "AGPL-3.0-only",
   "private": true,
   "description": "CyAnnota - application autonome d’annotation d’interfaces",
