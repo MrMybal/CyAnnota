@@ -62,3 +62,14 @@ next-env.d.ts
 *.etl
 *.binlog
 *.log
+
+# Local user media, annotation exports and release packages
+*.cyannota
+*.cyannota.zip
+*.exe
+*.msi
+/exports/
+/captures/
+/recordings/
+/private-media/
+/screenshots-local/

@@ -12,14 +12,6 @@ CyAnnota est un outil local d’annotation d’images et de vidéos. Il permet d
 
 ![Accueil de CyAnnota avec import d’image ou de vidéo](docs/screenshots/01-home.png)
 
-### Annotation d’une image
-
-![Annotation d’une image avec cadres, flèches, notes et déplacements](docs/screenshots/02-image-annotations.png)
-
-### Annotation vidéo et timeline
-
-![Annotation d’une vidéo avec corrections temporelles et timeline](docs/screenshots/03-video-timeline.png)
-
 ## Fonctions principales
 
 - annotations d’images avec cadres, formes, textes, couleurs, suppressions et découpes ;
@@ -28,7 +20,7 @@ CyAnnota est un outil local d’annotation d’images et de vidéos. Il permet d
 - zoom et déplacement dans un espace de travail de type canvas ;
 - sauvegarde de plusieurs médias dans un projet `.cyannota` ;
 - exports Humain sans prompt et exports IA avec prompts structurés ;
-- export GIF ou MP4, copie du fichier exporté dans le presse-papiers et renommage automatique sans écrasement ;
+- export GIF ou MP4, optimisation locale des images en WebP, copie du fichier exporté dans le presse-papiers et renommage automatique sans écrasement ;
 - intégration locale avec CyTask, CyCapture et des applications Web ;
 - application Web locale et application Windows Electron ;
 - interface et prompts en anglais ou en français, avec l’anglais par défaut.

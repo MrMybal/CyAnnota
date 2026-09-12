@@ -17,7 +17,10 @@ they are not a substitute for reviewing staged files and release contents.
 
 Review `git diff --cached` before committing. Use relative project paths and
 synthetic screenshots. Never put credentials into reports or issue attachments.
-Build outputs and release archives need a separate privacy review before uploading.
+Public image and video files are denied unless their reviewed SHA-256 is explicitly
+listed in `scripts/check-repository-privacy.py`; a changed media file must be
+reviewed and approved again. Build outputs and release archives need a separate
+privacy review before uploading.
 Changing Git history does not remove old installers, remote caches or third-party
 clones. After an authorized history rewrite, use a fresh clone rather than merging
 or pushing an old checkout, which can reintroduce removed data.

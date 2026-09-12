@@ -709,6 +709,7 @@ export default function Home() {
   const [exportAudience, setExportAudience] = useState<ExportAudience>('ai');
   const [exportContainer, setExportContainer] = useState<ExportContainer>('zip');
   const [includeOriginalVideosInExport, setIncludeOriginalVideosInExport] = useState(false);
+  const [optimizeImagesInExport, setOptimizeImagesInExport] = useState(true);
   const [copyExportToClipboard, setCopyExportToClipboard] = useState(true);
   const [preserveGifFormatInExport, setPreserveGifFormatInExport] = useState(false);
   const [exportProgressLabel, setExportProgressLabel] = useState('');
@@ -2790,7 +2791,11 @@ export default function Home() {
     return 'x=' + Math.round(bounds.x) + ', y=' + Math.round(bounds.y) + pt(', width=', ', largeur=') + Math.round(bounds.w) + pt(', height=', ', hauteur=') + Math.round(bounds.h);
   }
 
-  function buildPrompt(project: ProjectFile = projectData(), promptLocale: AppLocale = locale) {
+  function buildPrompt(
+    project: ProjectFile = projectData(),
+    promptLocale: AppLocale = locale,
+    annotatedImageName = 'annotated.png',
+  ) {
     const pt = (english: string, french: string) => translate(promptLocale, english, french);
     const sourceAnnotations = createImageDeliveryProject(project).annotations;
     const sourceLayers = project.layers;
@@ -2799,7 +2804,7 @@ export default function Home() {
     const lines = [
       pt('# Interface correction brief — ', '# Brief de corrections — ') + project.title,
       '',
-      pt('Modify the interface using “images/original-', 'Modifie l’interface à partir de « images/original-') + safeFileName(sourceImageName) + pt('”, following “images/annotated.png” and the numbered corrections below.', ' » en suivant « images/annotated.png » et les corrections numérotées ci-dessous.'),
+      pt('Modify the interface using “images/original-', 'Modifie l’interface à partir de « images/original-') + safeFileName(sourceImageName) + pt('”, following “images/', ' » en suivant « images/') + annotatedImageName + pt('” and the numbered corrections below.', ' » et les corrections numérotées ci-dessous.'),
       '',
       pt('## Main image message', '## Message principal de l’image'),
       '',
@@ -2988,10 +2993,165 @@ export default function Home() {
     return output;
   }
 
-  function canvasBlob(canvas: HTMLCanvasElement) {
+  function canvasBlob(
+    canvas: HTMLCanvasElement,
+    mimeType = 'image/png',
+    quality?: number,
+  ) {
     return new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Export impossible'))), 'image/png');
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error('Export impossible'))),
+        mimeType,
+        quality,
+      );
     });
+  }
+
+  function replaceImageExtension(name: string, extension: string) {
+    const safeName = name.trim() || 'image';
+    return safeName.replace(/\.[^.]+$/, '') + extension;
+  }
+
+  function blobToDataUrl(blob: Blob) {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error || new Error('Image optimisée illisible'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function optimizeEmbeddedImage(source: string, name: string) {
+    const image = await loadImageElement(source);
+    const maxDimension = 2048;
+    const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Canevas d’optimisation indisponible');
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const optimized = await canvasBlob(canvas, 'image/webp', 0.86);
+    const originalSize = dataUrlBytes(source, 'L’image « ' + name + ' »').byteLength;
+    if (optimized.type !== 'image/webp' || optimized.size >= originalSize) {
+      return { dataUrl: source, name, scale: 1 };
+    }
+    return {
+      dataUrl: await blobToDataUrl(optimized),
+      name: replaceImageExtension(name, '.webp'),
+      scale,
+    };
+  }
+
+  function scalePoint(point: Point, scale: number): Point {
+    return { x: point.x * scale, y: point.y * scale };
+  }
+
+  function scaleAnnotationGeometry(annotation: Annotation, scale: number): Annotation {
+    if (scale === 1) return annotation;
+    if (annotation.type === 'arrow') {
+      return {
+        ...annotation,
+        x1: annotation.x1 * scale,
+        y1: annotation.y1 * scale,
+        x2: annotation.x2 * scale,
+        y2: annotation.y2 * scale,
+      };
+    }
+    if (annotation.type === 'draw') {
+      return { ...annotation, points: annotation.points.map((point) => scalePoint(point, scale)) };
+    }
+    if (annotation.type === 'text' || annotation.type === 'color') {
+      return { ...annotation, x: annotation.x * scale, y: annotation.y * scale };
+    }
+    if (annotation.type === 'cut') {
+      return {
+        ...annotation,
+        sourceX: annotation.sourceX * scale,
+        sourceY: annotation.sourceY * scale,
+        x: annotation.x * scale,
+        y: annotation.y * scale,
+        w: annotation.w * scale,
+        h: annotation.h * scale,
+        polygon: annotation.polygon?.map((point) => scalePoint(point, scale)),
+      };
+    }
+    if (annotation.type === 'resize') {
+      return {
+        ...annotation,
+        sourceX: annotation.sourceX * scale,
+        sourceY: annotation.sourceY * scale,
+        sourceW: annotation.sourceW * scale,
+        sourceH: annotation.sourceH * scale,
+        x: annotation.x * scale,
+        y: annotation.y * scale,
+        w: annotation.w * scale,
+        h: annotation.h * scale,
+      };
+    }
+    return {
+      ...annotation,
+      x: annotation.x * scale,
+      y: annotation.y * scale,
+      w: annotation.w * scale,
+      h: annotation.h * scale,
+    };
+  }
+
+  async function optimizeImageProjectForExport(project: ProjectFile) {
+    const deliveryProject = createImageDeliveryProject(project);
+    const optimizedImage = deliveryProject.image
+      ? await optimizeEmbeddedImage(deliveryProject.image.src, deliveryProject.image.name)
+      : null;
+    const optimizedAnnotations: Annotation[] = [];
+    for (const annotation of deliveryProject.annotations) {
+      const references: ReferenceImage[] = [];
+      for (const reference of annotation.references) {
+        const optimizedReference = await optimizeEmbeddedImage(reference.dataUrl, reference.name);
+        references.push({
+          ...reference,
+          name: optimizedReference.name,
+          dataUrl: optimizedReference.dataUrl,
+        });
+      }
+      const scaledAnnotation = scaleAnnotationGeometry(annotation, optimizedImage?.scale || 1);
+      optimizedAnnotations.push({ ...scaledAnnotation, references } as Annotation);
+    }
+    return {
+      ...deliveryProject,
+      image: optimizedImage
+        ? { src: optimizedImage.dataUrl, name: optimizedImage.name }
+        : null,
+      annotations: optimizedAnnotations,
+    };
+  }
+
+  function adaptPromptImagePaths(
+    prompt: string,
+    sourceProject: ProjectFile,
+    packagedProject: ProjectFile,
+    annotatedFileName: string,
+  ) {
+    let adapted = prompt.replaceAll('images/annotated.png', 'images/' + annotatedFileName);
+    if (sourceProject.image && packagedProject.image) {
+      adapted = adapted.replaceAll(
+        'images/original-' + safeFileName(sourceProject.image.name),
+        'images/original-' + safeFileName(packagedProject.image.name),
+      );
+    }
+    packagedProject.annotations.forEach((packagedAnnotation, index) => {
+      const sourceAnnotation = sourceProject.annotations.find((item) => item.id === packagedAnnotation.id);
+      sourceAnnotation?.references.forEach((reference) => {
+        const packagedReference = packagedAnnotation.references.find((item) => item.id === reference.id);
+        if (!packagedReference) return;
+        const prefix = 'references/' + String(index + 1).padStart(2, '0') + '-';
+        adapted = adapted.replaceAll(
+          prefix + safeFileName(reference.name),
+          prefix + safeFileName(packagedReference.name),
+        );
+      });
+    });
+    return adapted;
   }
 
   async function downloadAnnotatedImage() {
@@ -3009,6 +3169,7 @@ export default function Home() {
     project: ProjectFile,
     folderPath: string,
     prompt?: string,
+    optimizeImages = false,
   ) {
     zip.file(folderPath + 'project.annota.json', JSON.stringify(project, null, 2));
     if (prompt) zip.file(folderPath + 'prompt.md', prompt);
@@ -3019,14 +3180,28 @@ export default function Home() {
       dataUrlBytes(project.image.src, `L’image source « ${project.image.name} »`),
     );
 
+    const imageMimeType = optimizeImages ? 'image/webp' : 'image/png';
+    const imageQuality = optimizeImages ? 0.86 : undefined;
+    const imageExtension = optimizeImages ? '.webp' : '.png';
     const annotatedCanvas = await renderProjectCanvas(project);
-    zip.file(folderPath + 'images/annotated.png', await canvasBlob(annotatedCanvas));
+    zip.file(
+      folderPath + 'images/annotated' + imageExtension,
+      await canvasBlob(annotatedCanvas, imageMimeType, imageQuality),
+    );
 
-    for (const layer of project.layers) {
+    const usedLayers = project.layers.filter((layer) =>
+      project.annotations.some((annotation) => annotation.layerId === layer.id),
+    );
+    const layersToExport = optimizeImages && usedLayers.length <= 1
+      ? []
+      : optimizeImages
+        ? usedLayers
+        : project.layers;
+    for (const layer of layersToExport) {
       const layerCanvas = await renderProjectCanvas(project, new Set([layer.id]));
       zip.file(
-        folderPath + 'images/calque-' + safeFileName(layer.name) + '.png',
-        await canvasBlob(layerCanvas),
+        folderPath + 'images/calque-' + safeFileName(layer.name) + imageExtension,
+        await canvasBlob(layerCanvas, imageMimeType, imageQuality),
       );
     }
 
@@ -3288,6 +3463,21 @@ export default function Home() {
         return false;
       }
 
+      const shouldOptimizeImages = isDeliveryExport && optimizeImagesInExport;
+      if (shouldOptimizeImages) {
+        const imageTabsToOptimize = exportableTabs.filter(
+          (tab): tab is ImageBoardTab => tab.kind === 'image',
+        );
+        for (let index = 0; index < imageTabsToOptimize.length; index += 1) {
+          const tab = imageTabsToOptimize[index];
+          setExportProgressLabel(
+            t('Optimizing image ', 'Optimisation de l’image ') +
+              (index + 1) + '/' + imageTabsToOptimize.length,
+          );
+          packagedImageProjects.set(tab.id, await optimizeImageProjectForExport(tab.project));
+        }
+      }
+
       const zip = new JSZip();
       const storedTabs = workspaceTabs.map((tab) => {
         if (tab.kind === 'image') {
@@ -3361,6 +3551,9 @@ export default function Home() {
             imageCount,
             videoCount,
             correctionCount,
+            imageOptimization: shouldOptimizeImages
+              ? { format: 'webp', quality: 0.86, maximumDimension: 2048 }
+              : null,
             sourceApplication: 'CyAnnota',
           },
           null,
@@ -3376,6 +3569,9 @@ export default function Home() {
           (options.includePrompt
             ? t('AI mode: correction prompts are included. ', 'Mode IA : les prompts de correction sont inclus. ')
             : t('Human mode: no prompt is included. ', 'Mode Humain : aucun prompt n’est inclus. ')) +
+          (shouldOptimizeImages
+            ? t('Images are optimized locally as WebP up to 2048 px. ', 'Les images sont optimisées localement en WebP jusqu’à 2048 px. ')
+            : '') +
           (isDeliveryExport
             ? t('Videos are trimmed and re-encoded. Original sources are ', 'Les vidéos sont découpées et réencodées. Les sources originales sont ') + (includeOriginalVideos ? t('also included.', 'également incluses.') : t('omitted to keep the package lightweight.', 'omises pour alléger le paquet.'))
             : t('The save contains source videos and their trimmed, re-encoded versions.', 'La sauvegarde contient les vidéos sources ainsi que leurs versions découpées et réencodées.')) +
@@ -3416,14 +3612,29 @@ export default function Home() {
             );
           } else {
             const packagedProject = packagedImageProjects.get(tab.id) || tab.project;
+            const annotatedFileName = shouldOptimizeImages ? 'annotated.webp' : 'annotated.png';
             const generatedPrompt = options.includePrompt
-              ? withWorkspaceInstructions(buildPrompt(packagedProject, locale), locale)
+              ? withWorkspaceInstructions(
+                  buildPrompt(packagedProject, locale, annotatedFileName),
+                  locale,
+                )
               : undefined;
             const prompt =
               options.includePrompt && options.delivery && tab.id === activeTabId && exportPrompt
-                ? exportPrompt
+                ? adaptPromptImagePaths(
+                    exportPrompt,
+                    tab.project,
+                    packagedProject,
+                    annotatedFileName,
+                  )
                 : generatedPrompt;
-            await addProjectToZip(zip, packagedProject, folder, prompt);
+            await addProjectToZip(
+              zip,
+              packagedProject,
+              folder,
+              prompt,
+              shouldOptimizeImages,
+            );
           }
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
@@ -3542,6 +3753,7 @@ export default function Home() {
       0,
     );
     const videoCount = tabs.filter((tab) => tab.kind === 'video').length;
+    const imageCount = tabs.filter((tab) => tab.kind === 'image' && Boolean(tab.project.image)).length;
     const gifCount = tabs.filter(
       (tab) => tab.kind === 'video' && isGifFile(tab.file),
     ).length;
@@ -3655,6 +3867,20 @@ export default function Home() {
               <span>
                 <strong>{t('Export animated GIFs as GIF', 'Exporter les GIF animés au format GIF')}</strong>
                 <small>{t('Keeps a true animated GIF in the package. MP4 remains recommended for a lighter file and smoother playback.', 'Conserve un vrai GIF animé dans le paquet. Le MP4 reste recommandé pour un fichier plus léger et une lecture plus fluide.')}</small>
+              </span>
+            </label>
+          )}
+          {imageCount > 0 && (
+            <label className="export-original-option">
+              <input
+                type="checkbox"
+                checked={optimizeImagesInExport}
+                disabled={isExporting}
+                onChange={(event) => setOptimizeImagesInExport(event.target.checked)}
+              />
+              <span>
+                <strong>{t('Optimize images for export', 'Optimiser les images pour l’export')}</strong>
+                <small>{t('WebP up to 2048 px dramatically reduces the package. Save always keeps the original source images.', 'WebP jusqu’à 2048 px réduit fortement le paquet. Save conserve toujours les images sources originales.')}</small>
               </span>
             </label>
           )}

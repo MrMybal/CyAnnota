@@ -1,6 +1,6 @@
 appId: com.cyberalien.cyannota
 productName: CyAnnota
-electronVersion: 44.0.0
+electronVersion: 44.3.0
 electronDist: ../node_modules/electron/dist
 asar: true
 npmRebuild: false
