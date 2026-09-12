@@ -47,3 +47,18 @@ next-env.d.ts
 
 # generated from @ffmpeg/core
 /public/ffmpeg/
+
+# Private local data and diagnostic outputs
+.codex/
+.cyrevision/
+/.openai/hosting.json
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+*.dmp
+*.etl
+*.binlog
+*.log
