@@ -20,6 +20,12 @@ import VideoAnnotator, {
   type VideoOutputFormat,
   type VideoProjectData,
 } from './video-annotator';
+import ModelAnnotator, {
+  buildModelPrompt,
+  convertModelFiles,
+  isModelFile,
+  type ModelProjectData,
+} from './model-annotator';
 import {
   ChangeEvent,
   DragEvent,
@@ -176,6 +182,34 @@ type ProjectFile = {
 
 type ExportAudience = 'ai' | 'human';
 type ExportContainer = 'zip' | 'project';
+type IntegrationResultMode = 'archive' | 'direct' | 'both';
+
+type IntegrationDirectFile = {
+  path: string;
+  type: string;
+  size: number;
+  blob: Blob;
+};
+
+type CyAnnotaManifest = {
+  format: 'cyannota-project';
+  formatVersion: 1;
+  title: string;
+  updatedAt: string;
+  container: ExportContainer;
+  audience: ExportAudience;
+  locale: AppLocale;
+  workspace: 'workspace.cyannota.json';
+  thumbnail: 'thumbnail.png';
+  activeTabId: string;
+  tabCount: number;
+  imageCount: number;
+  videoCount: number;
+  modelCount: number;
+  correctionCount: number;
+  imageOptimization: { format: 'webp'; quality: number; maximumDimension: number } | null;
+  sourceApplication: 'CyAnnota';
+};
 
 type IntegrationBridge = {
   providerId: string;
@@ -185,6 +219,12 @@ type IntegrationBridge = {
   attachmentId: string;
   readOnly: boolean;
   maximumDocumentBytes: number;
+  maximumResultBytes: number;
+  protocolVersion: number;
+  resultMode: IntegrationResultMode;
+  closeOnSend: boolean;
+  hostWindow: Window;
+  displayMode: 'popup' | 'iframe';
 };
 
 type IntegrationBridgeMessage = {
@@ -202,6 +242,10 @@ type IntegrationBridgeMessage = {
   exportAudience?: unknown;
   exportContainer?: unknown;
   includeOriginalVideos?: unknown;
+  resultMode?: unknown;
+  closeOnSend?: unknown;
+  maximumResultBytes?: unknown;
+  protocolVersion?: unknown;
   locale?: unknown;
   ok?: unknown;
   revision?: unknown;
@@ -223,7 +267,16 @@ type VideoBoardTab = {
   project: VideoProjectData;
 };
 
-type BoardTab = ImageBoardTab | VideoBoardTab;
+type ModelBoardTab = {
+  id: string;
+  label: string;
+  kind: 'model';
+  sourceFile: File;
+  convertedFile: File;
+  project: ModelProjectData;
+};
+
+type BoardTab = ImageBoardTab | VideoBoardTab | ModelBoardTab;
 
 function initialLayers(locale: AppLocale = DEFAULT_LOCALE): Layer[] {
   return [
@@ -510,16 +563,19 @@ function arrayBufferToBase64(buffer: ArrayBuffer) {
   return btoa(binary);
 }
 
-async function showSaveFailure(message: string, error: unknown) {
+async function showSaveFailure(
+  message: string,
+  error: unknown,
+  title = 'CyAnnota - erreur de sauvegarde',
+  finalNote = 'Le fichier final n’a pas été remplacé. Vous pouvez fermer cette fenêtre et réessayer.',
+) {
   const detail = error instanceof Error ? error.message : String(error || 'Erreur inconnue');
   if (window.cyAnnotaDesktop) {
     try {
       await window.cyAnnotaDesktop.showErrorMessage({
-        title: 'CyAnnota - erreur de sauvegarde',
+        title,
         message,
-        detail:
-          detail +
-          '\n\nLe fichier final n’a pas été remplacé. Vous pouvez fermer cette fenêtre et réessayer.',
+        detail: detail + '\n\n' + finalNote,
       });
       return;
     } catch {
@@ -529,11 +585,6 @@ async function showSaveFailure(message: string, error: unknown) {
   window.alert(message + '\n\nDétail technique : ' + detail);
 }
 
-async function savePreparedBlob(
-  blob: Blob,
-  prepared: PreparedFileSave,
-  options: { copyToClipboard?: boolean } = {},
-): Promise<SaveBlobResult> {
 async function copyBlobToClipboard(blob: Blob, name: string) {
   if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
     throw new Error('Ce navigateur ne permet pas de copier un fichier dans le presse-papiers.');
@@ -545,6 +596,11 @@ async function copyBlobToClipboard(blob: Blob, name: string) {
   ]);
 }
 
+async function savePreparedBlob(
+  blob: Blob,
+  prepared: PreparedFileSave,
+  options: { copyToClipboard?: boolean } = {},
+): Promise<SaveBlobResult> {
   if (prepared.desktopToken) {
     if (!window.cyAnnotaDesktop) throw new Error('Pont de sauvegarde desktop indisponible');
     if (!blob.size) throw new Error('Le fichier généré est vide.');
@@ -599,6 +655,38 @@ async function copyBlobToClipboard(blob: Blob, name: string) {
     }
   }
   return { saved: true, copied, fileName: prepared.name, renamed: false, copyError };
+}
+
+async function copyBlobAsFileToClipboard(blob: Blob, name: string) {
+  if (!blob.size) throw new Error('Le fichier généré est vide.');
+  const desktop = window.cyAnnotaDesktop;
+  if (!desktop) {
+    await copyBlobToClipboard(blob, name);
+    return { copied: true, fileName: name };
+  }
+
+  const prepared = await desktop.prepareClipboardFile({ name });
+  const token = prepared.token;
+  try {
+    await desktop.beginSaveFile({ token });
+    const chunkSize = 512 * 1024;
+    for (let offset = 0; offset < blob.size; offset += chunkSize) {
+      const slice = blob.slice(offset, Math.min(offset + chunkSize, blob.size));
+      const base64 = arrayBufferToBase64(await slice.arrayBuffer());
+      const result = await desktop.writeSaveChunk({ token, base64 });
+      if (result.written !== slice.size) {
+        throw new Error(`Écriture incomplète : ${result.written} octets sur ${slice.size}.`);
+      }
+    }
+    const result = await desktop.finishClipboardFile({ token });
+    if (!result.copied || result.bytesWritten !== blob.size) {
+      throw new Error(`Copie incomplète : ${result.bytesWritten} octets sur ${blob.size}.`);
+    }
+    return { copied: true, fileName: result.fileName || prepared.fileName || name };
+  } catch (error) {
+    await desktop.abortSaveFile({ token }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function downloadBlob(blob: Blob, name: string) {
@@ -732,6 +820,7 @@ export default function Home() {
   const projectInputRef = useRef<HTMLInputElement>(null);
   const referenceInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
+  const modelInputRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const annotationsRef = useRef<Annotation[]>(annotations);
   const globalInstructionsRef = useRef(globalInstructions);
@@ -747,7 +836,7 @@ export default function Home() {
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) || tabs[0];
   const hasExportableMedia = tabs.some(
-    (tab) => tab.kind === 'video' || Boolean(tab.project.image),
+    (tab) => tab.kind === 'video' || tab.kind === 'model' || Boolean(tab.project.image),
   );
   const selected = annotations.find((annotation) => annotation.id === selectedId) ?? null;
   const activeLayer = layers.find((layer) => layer.id === activeLayerId) ?? layers[0];
@@ -795,7 +884,9 @@ export default function Home() {
   useEffect(() => {
     const parameters = new URLSearchParams(window.location.search);
     const providerId = (parameters.get('integration') || '').toLowerCase();
-    if (!/^[a-z0-9._-]{2,40}$/.test(providerId) || !window.opener) return;
+    const displayMode = parameters.get('display') === 'iframe' ? 'iframe' : 'popup';
+    const hostWindow = displayMode === 'iframe' ? window.parent : window.opener;
+    if (!/^[a-z0-9._-]{2,40}$/.test(providerId) || !hostWindow || hostWindow === window) return;
 
     const session = parameters.get('session') || '';
     const attachmentId = parameters.get('attachmentId') || parameters.get('mediaId') || 'media';
@@ -814,14 +905,22 @@ export default function Home() {
     }
     if (!session || !attachmentId) return;
 
-    const opener = window.opener;
     const receive = (event: MessageEvent<unknown>) => {
-      if (event.source !== opener || event.origin !== parentOrigin || !isRecord(event.data)) return;
+      if (event.source !== hostWindow || event.origin !== parentOrigin || !isRecord(event.data)) return;
       const message = event.data as IntegrationBridgeMessage;
       if (message.source !== providerId || message.session !== session) return;
 
       if (message.type === 'open-media' && message.attachmentId === attachmentId) {
-        openIntegrationMedia(message, parentOrigin, session, attachmentId, providerId, providerLabel).catch((error) => {
+        openIntegrationMedia(
+          message,
+          parentOrigin,
+          session,
+          attachmentId,
+          providerId,
+          providerLabel,
+          hostWindow,
+          displayMode,
+        ).catch((error) => {
           const text = error instanceof Error ? error.message : t('Invalid integration media', 'Média d’intégration invalide');
           setSaveStatus(t('Failed to load ', 'Échec du chargement ') + providerLabel);
           showImportNotice(text);
@@ -829,7 +928,21 @@ export default function Home() {
         return;
       }
 
-      if (message.type === 'save-result') {
+      if (message.type === 'open-workspace' && providerId === 'cyai' && message.attachmentId === attachmentId) {
+        openIntegrationWorkspace(
+          message,
+          parentOrigin,
+          session,
+          attachmentId,
+          providerId,
+          providerLabel,
+          hostWindow,
+          displayMode,
+        );
+        return;
+      }
+
+      if (message.type === 'save-result' || message.type === 'send-result-ack') {
         if (message.ok === true) {
           setSaveStatus(
             typeof message.revision === 'number'
@@ -848,19 +961,24 @@ export default function Home() {
     };
 
     window.addEventListener('message', receive);
-    opener.postMessage({
+    hostWindow.postMessage({
       source: 'cyannota',
       type: 'ready',
       protocol: 'cyannota.integration',
-      protocolVersion: 1,
+      protocolVersion: 2,
       session,
       capabilities: {
-        media: ['image', 'video'],
+        media: ['image', 'video', 'project'],
         exportAudiences: ['ai', 'human'],
         exportContainers: ['zip', 'project'],
         projectExtension: '.cyannota',
         locales: ['en', 'fr'],
         defaultLocale: DEFAULT_LOCALE,
+        resultModes: ['archive', 'direct', 'both'],
+        embeddedDisplay: true,
+        directFiles: true,
+        packagePreview: true,
+        workspaceSession: true,
       },
     }, parentOrigin);
     return () => window.removeEventListener('message', receive);
@@ -900,15 +1018,17 @@ export default function Home() {
     attachmentId: string,
     providerId: string,
     providerLabel: string,
+    hostWindow: Window,
+    displayMode: 'popup' | 'iframe',
   ) {
     if (!(message.file instanceof Blob)) throw new Error('Le fichier transmis est absent.');
-    if (message.mediaKind !== 'image' && message.mediaKind !== 'video') {
+    if (message.mediaKind !== 'image' && message.mediaKind !== 'video' && message.mediaKind !== 'project') {
       throw new Error('Le type de média transmis est invalide.');
     }
 
     const title = typeof message.title === 'string' && message.title.trim()
       ? message.title.trim()
-      : message.mediaKind === 'video' ? 'video.mp4' : 'image.png';
+      : message.mediaKind === 'video' ? 'video.mp4' : message.mediaKind === 'project' ? 'project.cyannota' : 'image.png';
     const file = message.file instanceof File
       ? message.file
       : new File([message.file], title, { type: message.file.type });
@@ -922,6 +1042,16 @@ export default function Home() {
       maximumDocumentBytes: typeof message.maximumDocumentBytes === 'number'
         ? message.maximumDocumentBytes
         : 4_194_304,
+      maximumResultBytes: typeof message.maximumResultBytes === 'number'
+        ? message.maximumResultBytes
+        : 536_870_912,
+      protocolVersion: typeof message.protocolVersion === 'number' ? message.protocolVersion : 1,
+      resultMode: message.resultMode === 'direct' || message.resultMode === 'both'
+        ? message.resultMode
+        : 'archive',
+      closeOnSend: message.closeOnSend !== false,
+      hostWindow,
+      displayMode,
     };
     integrationBridgeRef.current = bridge;
     setIntegrationBridge(bridge);
@@ -936,7 +1066,9 @@ export default function Home() {
     }
     if (isAppLocale(message.locale)) changeLocale(message.locale);
 
-    if (message.mediaKind === 'video') {
+    if (message.mediaKind === 'project') {
+      await openProjectFile(file, true);
+    } else if (message.mediaKind === 'video') {
       const project = isRecord(message.document)
         ? message.document as unknown as VideoProjectData
         : undefined;
@@ -971,9 +1103,64 @@ export default function Home() {
     );
   }
 
-  function sendIntegrationDocument(document: ProjectFile | VideoProjectData) {
+  function openIntegrationWorkspace(
+    message: IntegrationBridgeMessage,
+    parentOrigin: string,
+    session: string,
+    attachmentId: string,
+    providerId: string,
+    providerLabel: string,
+    hostWindow: Window,
+    displayMode: 'popup' | 'iframe',
+  ) {
+    const bridge: IntegrationBridge = {
+      providerId,
+      providerLabel,
+      session,
+      parentOrigin,
+      attachmentId,
+      readOnly: message.readOnly === true,
+      maximumDocumentBytes: typeof message.maximumDocumentBytes === 'number'
+        ? message.maximumDocumentBytes
+        : 4_194_304,
+      maximumResultBytes: typeof message.maximumResultBytes === 'number'
+        ? message.maximumResultBytes
+        : 536_870_912,
+      protocolVersion: typeof message.protocolVersion === 'number' ? message.protocolVersion : 1,
+      resultMode: message.resultMode === 'direct' || message.resultMode === 'both'
+        ? message.resultMode
+        : 'archive',
+      closeOnSend: message.closeOnSend !== false,
+      hostWindow,
+      displayMode,
+    };
+    integrationBridgeRef.current = bridge;
+    setIntegrationBridge(bridge);
+    if (message.exportAudience === 'ai' || message.exportAudience === 'human') {
+      setExportAudience(message.exportAudience);
+    }
+    if (message.exportContainer === 'zip' || message.exportContainer === 'project') {
+      setExportContainer(message.exportContainer);
+    }
+    if (typeof message.includeOriginalVideos === 'boolean') {
+      setIncludeOriginalVideosInExport(message.includeOriginalVideos);
+    }
+    const workspaceLocale = isAppLocale(message.locale) ? message.locale : locale;
+    if (isAppLocale(message.locale)) changeLocale(message.locale);
+
+    const project = createBlankProject(workspaceLocale);
+    const id = createId();
+    setTabs([{ id, label: t('New image', 'Nouvelle image'), kind: 'image', project }]);
+    setActiveTabId(id);
+    applyProject(project);
+    setTool('select');
+    setSaveStatus(t('Linked to ', 'Lié à ') + providerLabel + t(' · workspace ready', ' · espace de travail prêt'));
+    showImportNotice(t('Workspace from ', 'Espace de travail ') + providerLabel + t(' ready', ' prêt'));
+  }
+
+  function sendIntegrationDocument(document: ProjectFile | VideoProjectData | ModelProjectData) {
     const bridge = integrationBridgeRef.current;
-    if (!bridge || !window.opener) return false;
+    if (!bridge) return false;
     if (bridge.readOnly) {
       setSaveStatus(t('Read-only', 'Consultation seule'));
       showImportNotice(bridge.providerLabel + t(' does not allow annotation changes', ' ne permet pas de modifier les annotations'));
@@ -993,11 +1180,11 @@ export default function Home() {
       return false;
     }
 
-    window.opener.postMessage({
+    bridge.hostWindow.postMessage({
       source: 'cyannota',
       type: 'save-annotations',
       protocol: 'cyannota.integration',
-      protocolVersion: 1,
+      protocolVersion: bridge.protocolVersion,
       session: bridge.session,
       attachmentId: bridge.attachmentId,
       document: clean,
@@ -1010,6 +1197,39 @@ export default function Home() {
     }, bridge.parentOrigin);
     setSaveStatus(t('Saving to ', 'Enregistrement dans ') + bridge.providerLabel + '…');
     return true;
+  }
+
+  function closeIntegration(reason: 'cancel' | 'sent' = 'cancel') {
+    const bridge = integrationBridgeRef.current;
+    if (!bridge) return;
+    bridge.hostWindow.postMessage({
+      source: 'cyannota',
+      type: 'integration-closed',
+      protocol: 'cyannota.integration',
+      protocolVersion: bridge.protocolVersion,
+      session: bridge.session,
+      attachmentId: bridge.attachmentId,
+      reason,
+    }, bridge.parentOrigin);
+    if (bridge.displayMode === 'popup') window.close();
+  }
+
+  async function sendIntegrationPackage() {
+    const bridge = integrationBridgeRef.current;
+    if (!bridge || !activeTab) return false;
+    if (bridge.readOnly) {
+      closeIntegration('cancel');
+      return false;
+    }
+    if (bridge.protocolVersion < 2) {
+      return sendIntegrationDocument(activeTab.project);
+    }
+    return downloadPackage({
+      delivery: true,
+      includePrompt: exportAudience === 'ai',
+      container: exportContainer,
+      target: 'integration',
+    });
   }
 
   function persistActiveImageTab(
@@ -1066,7 +1286,9 @@ export default function Home() {
               includeOriginalVideosInExport,
               preserveGifFormatInExport && isGifFile(activeTab.file) ? 'gif' : 'mp4',
             ), nextLocale)
-          : buildPrompt(projectData(), nextLocale),
+          : activeTab?.kind === 'model'
+            ? buildModelPrompt(activeTab.project, nextLocale)
+            : buildPrompt(projectData(), nextLocale),
       );
     }
   }
@@ -2277,7 +2499,8 @@ export default function Home() {
 
   function loadVideoFile(file?: File, project?: VideoProjectData, fromIntegration = false) {
     if (!file) return false;
-    if (integrationBridgeRef.current && !fromIntegration) {
+    // CyAI opens a workspace, not locked media; imported media opens beside the linked tab.
+    if (integrationBridgeRef.current && integrationBridgeRef.current.providerId !== 'cyai' && !fromIntegration) {
       showImportNotice(t('The media linked to ', 'Le média lié à ') + integrationBridgeRef.current.providerLabel + t(' cannot be replaced in this session', ' ne peut pas être remplacé dans cette session'));
       return false;
     }
@@ -2329,6 +2552,55 @@ export default function Home() {
     );
   }
 
+  async function loadModelFiles(files?: FileList | File[], project?: ModelProjectData, convertedFile?: File, fromIntegration = false) {
+    const selectedFiles = Array.from(files || []);
+    if (!selectedFiles.length) return false;
+    // CyAI opens a workspace, not locked media; imported models open beside the linked tab.
+    if (integrationBridgeRef.current && integrationBridgeRef.current.providerId !== 'cyai' && !fromIntegration) {
+      showImportNotice(t('The media linked to ', 'Le média lié à ') + integrationBridgeRef.current.providerLabel + t(' cannot be replaced in this session', ' ne peut pas être remplacé dans cette session'));
+      return false;
+    }
+    setSaveStatus(t('Converting the 3D model locally…', 'Conversion locale du modèle 3D…'));
+    try {
+      const converted = project && convertedFile
+        ? { source: selectedFiles[0], glb: convertedFile, project: structuredClone(project) }
+        : await convertModelFiles(selectedFiles, locale);
+      const id = createId();
+      const nextTab: ModelBoardTab = {
+        id,
+        label: converted.project.title || converted.source.name,
+        kind: 'model',
+        sourceFile: converted.source,
+        convertedFile: converted.glb,
+        project: converted.project,
+      };
+      const replaceBlank =
+        tabs.length === 1 &&
+        activeTab?.kind === 'image' &&
+        !imageSource &&
+        !activeTab.project.image;
+      setTabs((items) => replaceBlank ? [nextTab] : [...saveActiveTab(items), nextTab]);
+      setActiveTabId(id);
+      setSelectedId(null);
+      setSaveStatus(t('3D model ready', 'Modèle 3D prêt'));
+      showImportNotice(replaceBlank ? t('3D model opened in the first tab', 'Modèle 3D ouvert dans le premier onglet') : t('3D model opened in a new tab', 'Modèle 3D ouvert dans un nouvel onglet'));
+      return true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setSaveStatus(t('3D import failed', 'Échec de l’import 3D'));
+      showImportNotice(detail);
+      return false;
+    }
+  }
+
+  function updateModelTab(tabId: string, project: ModelProjectData) {
+    setTabs((items) => items.map((tab) =>
+      tab.id === tabId && tab.kind === 'model'
+        ? { ...tab, label: project.title || project.modelName, project: structuredClone(project) }
+        : tab,
+    ));
+  }
+
   async function openVideoFrameAsImage(file: File, time: number, videoTitle: string) {
     const dataUrl = await readAsDataUrl(file);
     const project = createBlankProject(locale);
@@ -2342,7 +2614,8 @@ export default function Home() {
   }
 
   async function loadImageFile(file?: File, source: 'file' | 'clipboard' = 'file') {
-    if (integrationBridgeRef.current) {
+    // CyAI opens a workspace, not locked media; pasted media opens beside the linked tab.
+    if (integrationBridgeRef.current && integrationBridgeRef.current.providerId !== 'cyai') {
       showImportNotice(t('The media linked to ', 'Le média lié à ') + integrationBridgeRef.current.providerLabel + t(' cannot be replaced in this session', ' ne peut pas être remplacé dans cette session'));
       return false;
     }
@@ -2359,7 +2632,7 @@ export default function Home() {
     project.title = nextImageName.replace(/\.[^.]+$/, '') || 'Corrections interface';
     project.image = { src: dataUrl, name: nextImageName };
 
-    const openedInNewTab = activeTab?.kind === 'video' || Boolean(imageSource);
+    const openedInNewTab = activeTab?.kind !== 'image' || Boolean(imageSource);
     if (openedInNewTab) {
       createTab(project, nextImageName);
     } else {
@@ -2379,6 +2652,7 @@ export default function Home() {
   }
 
   async function importClipboardMediaFile(file: File) {
+    if (isModelFile(file)) return loadModelFiles([file]);
     if (isVideoMediaFile(file)) return loadVideoFile(file);
     if (isStillImageFile(file)) return loadImageFile(file, 'clipboard');
     return false;
@@ -2421,7 +2695,7 @@ export default function Home() {
       const mediaFiles = Array.from(event.clipboardData?.items || [])
         .map((item) => item.kind === 'file' ? item.getAsFile() : null)
         .filter((file): file is File => Boolean(file))
-        .filter((file) => isVideoMediaFile(file) || isStillImageFile(file));
+        .filter((file) => isModelFile(file) || isVideoMediaFile(file) || isStillImageFile(file));
 
       if (!mediaFiles.length) {
         if (target?.matches('input, textarea, select, [contenteditable="true"]')) return;
@@ -2456,10 +2730,10 @@ export default function Home() {
       Array.from(dataTransfer.items).some(
         (item) =>
           item.kind === 'file' &&
-          (!item.type || item.type.startsWith('image/') || item.type.startsWith('video/')),
+          (!item.type || item.type.startsWith('image/') || item.type.startsWith('video/') || item.type.startsWith('model/')),
       ) ||
       Array.from(dataTransfer.files).some(
-        (file) => isVideoMediaFile(file) || isStillImageFile(file),
+        (file) => isModelFile(file) || isVideoMediaFile(file) || isStillImageFile(file),
       )
     );
   }
@@ -2480,6 +2754,11 @@ export default function Home() {
     event.preventDefault();
     setIsDraggingImage(false);
     const files = Array.from(event.dataTransfer.files);
+    const modelFile = files.find(isModelFile);
+    if (modelFile) {
+      loadModelFiles(files).catch(() => undefined);
+      return;
+    }
     const videoFile = files.find(isVideoMediaFile);
     if (videoFile) {
       loadVideoFile(videoFile);
@@ -2487,7 +2766,7 @@ export default function Home() {
     }
     const imageFile = files.find(isStillImageFile);
     if (!imageFile) {
-      showImportNotice(t('Drop a PNG, JPG, WebP image, video, or animated GIF', 'Dépose une image PNG, JPG, WebP, une vidéo ou un GIF animé'));
+      showImportNotice(t('Drop an image, video, GIF, GLB, glTF, FBX, OBJ, or USDZ file', 'Dépose une image, une vidéo, un GIF ou un fichier GLB, glTF, FBX, OBJ ou USDZ'));
       return;
     }
     loadImageFile(imageFile).catch(() => showImportNotice(t('Unable to import this image', 'Impossible d’importer cette image')));
@@ -2592,8 +2871,8 @@ export default function Home() {
     await downloadPackage({ delivery: false, includePrompt: false, container: 'project' });
   }
 
-  async function openProjectFile(file?: File) {
-    if (integrationBridgeRef.current) {
+  async function openProjectFile(file?: File, fromIntegration = false) {
+    if (integrationBridgeRef.current && !fromIntegration) {
       showImportNotice(t('This window is linked to media from ', 'Cette fenêtre est liée à un média ') + integrationBridgeRef.current.providerLabel);
       return;
     }
@@ -2611,7 +2890,8 @@ export default function Home() {
         if (workspaceEntry) {
           type StoredTab =
             | { id: string; label: string; kind?: 'image'; project: ProjectFile }
-            | { id: string; label: string; kind: 'video'; project: VideoProjectData; sourcePath?: string };
+            | { id: string; label: string; kind: 'video'; project: VideoProjectData; sourcePath?: string }
+            | { id: string; label: string; kind: 'model'; project: ModelProjectData; sourcePath?: string; convertedPath?: string };
           const workspace = JSON.parse(await workspaceEntry.async('string')) as {
             workspaceVersion: number;
             locale?: unknown;
@@ -2619,7 +2899,7 @@ export default function Home() {
             activeTabId: string;
             tabs: StoredTab[];
           };
-          if (![1, 2].includes(workspace.workspaceVersion) || !Array.isArray(workspace.tabs)) {
+          if (![1, 2, 3].includes(workspace.workspaceVersion) || !Array.isArray(workspace.tabs)) {
             throw new Error('Espace de travail invalide');
           }
           if (isAppLocale(workspace.locale)) changeLocale(workspace.locale);
@@ -2629,6 +2909,36 @@ export default function Home() {
 
           const restoredTabs: BoardTab[] = [];
           for (const storedTab of workspace.tabs) {
+            if (storedTab.kind === 'model') {
+              const modelProject = storedTab.project;
+              if (
+                modelProject?.version !== 1 ||
+                modelProject.kind !== 'model' ||
+                !Array.isArray(modelProject.annotations) ||
+                !Array.isArray(modelProject.viewpoints)
+              ) {
+                throw new Error('Onglet 3D invalide');
+              }
+              const sourceEntry = archive.file(storedTab.sourcePath || modelProject.sourcePath || '');
+              const convertedEntry = archive.file(storedTab.convertedPath || modelProject.convertedPath || '');
+              if (!sourceEntry || !convertedEntry) throw new Error('Fichiers 3D absents de l’onglet « ' + storedTab.label + ' »');
+              const [sourceBlob, convertedBlob] = await Promise.all([sourceEntry.async('blob'), convertedEntry.async('blob')]);
+              restoredTabs.push({
+                id: storedTab.id,
+                label: storedTab.label,
+                kind: 'model',
+                sourceFile: new File([sourceBlob], modelProject.modelName || 'model.glb', {
+                  type: modelProject.modelType || sourceBlob.type || 'application/octet-stream',
+                  lastModified: Date.now(),
+                }),
+                convertedFile: new File([convertedBlob], 'converted.glb', {
+                  type: 'model/gltf-binary',
+                  lastModified: Date.now(),
+                }),
+                project: structuredClone(modelProject),
+              });
+              continue;
+            }
             if (storedTab.kind === 'video') {
               const videoProject = storedTab.project;
               if (
@@ -2684,7 +2994,7 @@ export default function Home() {
           if (nextActive.kind === 'image') applyProject(structuredClone(nextActive.project));
           showImportNotice(
             restoredTabs.length +
-              ' onglet(s) image/vidéo restauré(s) depuis ' +
+              ' onglet(s) image/vidéo/3D restauré(s) depuis ' +
               (file.name.toLowerCase().endsWith('.cyannota') ? 'le projet CyAnnota' : 'le ZIP'),
           );
           return;
@@ -2742,7 +3052,7 @@ export default function Home() {
       }
 
       const label = project.image?.name || project.title || file.name;
-      if (activeTab?.kind === 'video' || imageSource) createTab(project, label);
+      if (activeTab?.kind !== 'image' || imageSource) createTab(project, label);
       else applyProject(project);
       showImportNotice(
         file.name.toLowerCase().endsWith('.cyannota')
@@ -2759,7 +3069,7 @@ export default function Home() {
   async function resumeDraft() {
     const project = await readDraft();
     if (!project) return;
-    if (activeTab?.kind === 'video' || imageSource) createTab(project, project.image?.name || project.title);
+    if (activeTab?.kind !== 'image' || imageSource) createTab(project, project.image?.name || project.title);
     else applyProject(project);
   }
 
@@ -2914,8 +3224,8 @@ export default function Home() {
       message,
       '',
       pt(
-        'This instruction applies to every image and video tab in this package.',
-        'Cette consigne s’applique à tous les onglets image et vidéo de ce paquet.',
+        'This instruction applies to every image, video, and 3D tab in this package.',
+        'Cette consigne s’applique à tous les onglets image, vidéo et 3D de ce paquet.',
       ),
       '',
       prompt,
@@ -2933,7 +3243,9 @@ export default function Home() {
           includeOriginalVideosInExport,
           videoOutputFormat(activeTab),
         ), locale)
-      : buildPrompt(projectData(), locale);
+      : activeTab?.kind === 'model'
+        ? buildModelPrompt(activeTab.project, locale)
+        : buildPrompt(projectData(), locale);
     setExportPrompt(withWorkspaceInstructions(prompt, locale));
     setExportOpen(true);
   }
@@ -3323,6 +3635,37 @@ export default function Home() {
     }
   }
 
+  async function addModelProjectToZip(
+    zip: JSZip,
+    tab: ModelBoardTab,
+    packagedProject: ModelProjectData,
+    folderPath: string,
+    includeOriginal: boolean,
+    prompt?: string,
+  ) {
+    const project = structuredClone(packagedProject);
+    zip.file(folderPath + 'model-project.cyannota.json', JSON.stringify(project, null, 2));
+    zip.file(folderPath + project.convertedPath, tab.convertedFile, { compression: 'STORE' });
+    if (includeOriginal && project.sourcePath !== project.convertedPath) {
+      zip.file(folderPath + project.sourcePath, tab.sourceFile, { compression: 'STORE' });
+    }
+    if (prompt) zip.file(folderPath + 'prompt.md', prompt);
+    project.viewpoints.forEach((view, index) => {
+      if (!view.snapshot) return;
+      zip.file(
+        folderPath + 'views/' + String(index + 1).padStart(2, '0') + '-' + safeFileName(view.name) + '.png',
+        dataUrlBytes(view.snapshot, 'Vue 3D ' + String(index + 1).padStart(2, '0')),
+      );
+    });
+    zip.file(
+      folderPath + 'paint/annotations.json',
+      JSON.stringify(project.annotations.map((annotation) => ({
+        ...annotation,
+        note: 'Approximate painted guidance on the mesh; not a strict geometric mask.',
+      })), null, 2),
+    );
+  }
+
   async function createWorkspaceThumbnail(workspaceTabs: BoardTab[], currentActive?: BoardTab) {
     const width = 640;
     const height = 360;
@@ -3337,19 +3680,35 @@ export default function Home() {
     let source: CanvasImageSource | null = null;
     let sourceWidth = 0;
     let sourceHeight = 0;
-    if (currentActive?.kind === 'image' && currentActive.project.image) {
-      const rendered = await renderProjectCanvas(currentActive.project);
+    const previewTab = workspaceTabs.find(
+      (tab): tab is ImageBoardTab => tab.kind === 'image' && Boolean(tab.project.image),
+    ) || currentActive || workspaceTabs[0];
+    if (previewTab?.kind === 'image' && previewTab.project.image) {
+      const rendered = await renderProjectCanvas(previewTab.project);
       source = rendered;
       sourceWidth = rendered.width;
       sourceHeight = rendered.height;
-    } else if (currentActive?.kind === 'video') {
-      const stop = currentActive.project.frameStops?.[0];
+    } else if (previewTab?.kind === 'video') {
+      const stop = previewTab.project.frameStops?.[0];
       if (stop?.imageData) {
         const image = new Image();
         await new Promise<void>((resolve, reject) => {
           image.onload = () => resolve();
           image.onerror = () => reject(new Error('La miniature vidéo est illisible.'));
           image.src = stop.imageData;
+        });
+        source = image;
+        sourceWidth = image.naturalWidth;
+        sourceHeight = image.naturalHeight;
+      }
+    } else if (previewTab?.kind === 'model') {
+      const snapshot = previewTab.project.viewpoints[0]?.snapshot;
+      if (snapshot) {
+        const image = new Image();
+        await new Promise<void>((resolve, reject) => {
+          image.onload = () => resolve();
+          image.onerror = () => reject(new Error('La miniature 3D est illisible.'));
+          image.src = snapshot;
         });
         source = image;
         sourceWidth = image.naturalWidth;
@@ -3367,7 +3726,7 @@ export default function Home() {
       context.fillStyle = '#ff6554';
       context.font = '800 58px Segoe UI';
       context.textAlign = 'center';
-      context.fillText(currentActive?.kind === 'video' ? 'VIDÉO' : 'CYANNOTA', width / 2, 165);
+      context.fillText(previewTab?.kind === 'video' ? 'VIDÉO' : previewTab?.kind === 'model' ? '3D' : 'CYANNOTA', width / 2, 165);
     }
 
     context.fillStyle = '#1b1b19ee';
@@ -3379,7 +3738,20 @@ export default function Home() {
     context.fillText(title, 18, height - 28);
     context.fillStyle = '#9b9891';
     context.font = '600 11px Segoe UI';
-    context.fillText(workspaceTabs.length + ' onglet(s) · ' + (currentActive?.kind === 'video' ? 'vidéo' : 'image'), 18, height - 11);
+    const annotationCount = workspaceTabs.reduce((count, tab) =>
+      count + tab.project.annotations.length + (
+        tab.kind === 'video'
+          ? (tab.project.frameStops || []).reduce(
+              (frameCount, stop) => frameCount + (stop.annotations || []).length,
+              0,
+            )
+          : 0
+      ), 0);
+    context.fillText(
+      workspaceTabs.length + ' onglet(s) · ' + annotationCount + ' annotation(s)',
+      18,
+      height - 11,
+    );
     context.textAlign = 'right';
     context.fillStyle = '#ff8a78';
     context.font = '800 12px Segoe UI';
@@ -3393,15 +3765,47 @@ export default function Home() {
     });
   }
 
+  function packageFileType(filePath: string) {
+    const extension = filePath.split('.').pop()?.toLowerCase();
+    return {
+      json: 'application/json',
+      md: 'text/markdown',
+      txt: 'text/plain',
+      png: 'image/png',
+      webp: 'image/webp',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      mp4: 'video/mp4',
+      webm: 'video/webm',
+      glb: 'model/gltf-binary',
+      gltf: 'model/gltf+json',
+      fbx: 'application/octet-stream',
+      obj: 'text/plain',
+      usdz: 'model/vnd.usdz+zip',
+    }[extension || ''] || 'application/octet-stream';
+  }
+
+  async function createDirectPackageFiles(zip: JSZip): Promise<IntegrationDirectFile[]> {
+    const entries = Object.values(zip.files).filter((entry) => !entry.dir);
+    return Promise.all(entries.map(async (entry) => {
+      const blob = await entry.async('blob');
+      const type = packageFileType(entry.name);
+      const typedBlob = blob.type === type ? blob : new Blob([blob], { type });
+      return { path: entry.name, type, size: typedBlob.size, blob: typedBlob };
+    }));
+  }
+
   async function downloadPackage(options: {
     delivery: boolean;
     includePrompt: boolean;
     container: ExportContainer;
     copyToClipboard?: boolean;
+    target?: 'save' | 'clipboard' | 'integration';
   }) {
     const workspaceTabs = saveActiveTab(tabs);
     const exportableTabs = workspaceTabs.filter(
-      (tab) => tab.kind === 'video' || Boolean(tab.project.image),
+      (tab) => tab.kind === 'video' || tab.kind === 'model' || Boolean(tab.project.image),
     );
     if (!exportableTabs.length) return false;
     if (false && options.includePrompt) {
@@ -3423,8 +3827,7 @@ export default function Home() {
       }
     }
     const currentActive = workspaceTabs.find((tab) => tab.id === activeTabId);
-    const packageTitle =
-      currentActive?.kind === 'video' ? currentActive.project.title : projectTitle;
+    const packageTitle = currentActive?.kind === 'image' ? projectTitle : currentActive?.project.title;
     const packageName =
       safeFileName(packageTitle || 'cyannota') +
       (options.container === 'project' ? '.cyannota' : '.cyannota.zip');
@@ -3438,6 +3841,7 @@ export default function Home() {
     const includeOriginalVideos = !isDeliveryExport || includeOriginalVideosInExport;
     const packagedImageProjects = new Map<string, ProjectFile>();
     const packagedVideoProjects = new Map<string, VideoProjectData>();
+    const packagedModelProjects = new Map<string, ModelProjectData>();
     workspaceTabs.forEach((tab) => {
       if (tab.kind === 'image') {
         packagedImageProjects.set(
@@ -3446,19 +3850,29 @@ export default function Home() {
         );
         return;
       }
-      packagedVideoProjects.set(
-        tab.id,
-        isDeliveryExport
-          ? createVideoDeliveryProject(tab.project, includeOriginalVideos, videoOutputFormat(tab))
-          : createVideoSaveProject(tab.project),
-      );
+      if (tab.kind === 'video') {
+        packagedVideoProjects.set(
+          tab.id,
+          isDeliveryExport
+            ? createVideoDeliveryProject(tab.project, includeOriginalVideos, videoOutputFormat(tab))
+            : createVideoSaveProject(tab.project),
+        );
+        return;
+      }
+      const modelProject = structuredClone(tab.project);
+      if (isDeliveryExport) {
+        modelProject.modelName = tab.convertedFile.name;
+        modelProject.modelType = 'model/gltf-binary';
+        modelProject.sourcePath = modelProject.convertedPath;
+      }
+      packagedModelProjects.set(tab.id, modelProject);
     });
 
     setIsExporting(true);
     setExportProgressLabel(t('Preparing package…', 'Préparation du paquet…'));
     try {
-      const preparedSave = await prepareFileSave(packageName);
-      if (!preparedSave) {
+      const preparedSave = options.target === 'save' ? await prepareFileSave(packageName) : null;
+      if (options.target === 'save' && !preparedSave) {
         setSaveStatus(t('Save cancelled', 'Enregistrement annulé'));
         return false;
       }
@@ -3488,6 +3902,18 @@ export default function Home() {
             project: packagedImageProjects.get(tab.id) || tab.project,
           };
         }
+        if (tab.kind === 'model') {
+          const exportIndex = exportableTabs.findIndex((item) => item.id === tab.id);
+          const folder = exportFolder(tab, Math.max(0, exportIndex));
+          return {
+            id: tab.id,
+            label: tab.label,
+            kind: 'model' as const,
+            project: packagedModelProjects.get(tab.id) || tab.project,
+            sourcePath: folder + (packagedModelProjects.get(tab.id) || tab.project).sourcePath,
+            convertedPath: folder + (packagedModelProjects.get(tab.id) || tab.project).convertedPath,
+          };
+        }
         const exportIndex = exportableTabs.findIndex((item) => item.id === tab.id);
         const folder = exportFolder(tab, Math.max(0, exportIndex));
         const packagedProject = packagedVideoProjects.get(tab.id) || tab.project;
@@ -3499,26 +3925,22 @@ export default function Home() {
           sourcePath: folder + packagedProject.sourcePath,
         };
       });
-      zip.file(
-        'workspace.cyannota.json',
-        JSON.stringify(
-          {
-            workspaceVersion: 2,
-            locale,
-            workspaceInstructions,
-            activeTabId,
-            tabs: storedTabs,
-          },
-          null,
-          2,
-        ),
-      );
+      const workspaceDocument = {
+        workspaceVersion: 2,
+        locale,
+        workspaceInstructions,
+        activeTabId,
+        tabs: storedTabs,
+      };
+      zip.file('workspace.cyannota.json', JSON.stringify(workspaceDocument, null, 2));
       const imageCount = exportableTabs.filter((tab) => tab.kind === 'image').length;
-      const videoCount = exportableTabs.length - imageCount;
+      const videoCount = exportableTabs.filter((tab) => tab.kind === 'video').length;
+      const modelCount = exportableTabs.filter((tab) => tab.kind === 'model').length;
       const correctionCount = exportableTabs.reduce((count, tab) => {
         if (tab.kind === 'image') {
           return count + (packagedImageProjects.get(tab.id) || tab.project).annotations.length;
         }
+        if (tab.kind === 'model') return count + (packagedModelProjects.get(tab.id) || tab.project).annotations.length;
         const packagedProject = packagedVideoProjects.get(tab.id) || tab.project;
         return count + packagedProject.annotations.length + (packagedProject.frameStops || []).reduce(
           (stopCount, stop) => stopCount + (stop.annotations || []).length,
@@ -3528,44 +3950,41 @@ export default function Home() {
       const packagedWorkspaceTabs: BoardTab[] = workspaceTabs.map((tab) =>
         tab.kind === 'image'
           ? { ...tab, project: packagedImageProjects.get(tab.id) || tab.project }
-          : { ...tab, project: packagedVideoProjects.get(tab.id) || tab.project },
+          : tab.kind === 'video'
+            ? { ...tab, project: packagedVideoProjects.get(tab.id) || tab.project }
+            : { ...tab, project: packagedModelProjects.get(tab.id) || tab.project },
       );
       const packagedCurrentActive = packagedWorkspaceTabs.find((tab) => tab.id === activeTabId);
       const thumbnail = await createWorkspaceThumbnail(packagedWorkspaceTabs, packagedCurrentActive);
       zip.file('thumbnail.png', thumbnail);
-      zip.file(
-        'manifest.cyannota.json',
-        JSON.stringify(
-          {
-            format: 'cyannota-project',
-            formatVersion: 1,
-            title: packageTitle || 'CyAnnota',
-            updatedAt: new Date().toISOString(),
-            container: options.container,
-            audience: options.includePrompt ? 'ai' : 'human',
-            locale,
-            workspace: 'workspace.cyannota.json',
-            thumbnail: 'thumbnail.png',
-            activeTabId,
-            tabCount: exportableTabs.length,
-            imageCount,
-            videoCount,
-            correctionCount,
-            imageOptimization: shouldOptimizeImages
-              ? { format: 'webp', quality: 0.86, maximumDimension: 2048 }
-              : null,
-            sourceApplication: 'CyAnnota',
-          },
-          null,
-          2,
-        ),
-      );
+      const manifest: CyAnnotaManifest = {
+        format: 'cyannota-project',
+        formatVersion: 1,
+        title: packageTitle || 'CyAnnota',
+        updatedAt: new Date().toISOString(),
+        container: options.container,
+        audience: options.includePrompt ? 'ai' : 'human',
+        locale,
+        workspace: 'workspace.cyannota.json',
+        thumbnail: 'thumbnail.png',
+        activeTabId,
+        tabCount: exportableTabs.length,
+        imageCount,
+        videoCount,
+        modelCount,
+        correctionCount,
+        imageOptimization: shouldOptimizeImages
+          ? { format: 'webp', quality: 0.86, maximumDimension: 2048 }
+          : null,
+        sourceApplication: 'CyAnnota',
+      };
+      zip.file('manifest.cyannota.json', JSON.stringify(manifest, null, 2));
       zip.file(
         t('README.txt', 'LISEZ-MOI.txt'),
         (options.container === 'project' ? t('CyAnnota project', 'Projet CyAnnota') : t('CyAnnota archive', 'Archive CyAnnota')) +
           t(' containing ', ' contenant ') +
           exportableTabs.length +
-          t(' image/video tab(s). ', ' onglet(s) image/vidéo. ') +
+          t(' image/video/3D tab(s). ', ' onglet(s) image/vidéo/3D. ') +
           (options.includePrompt
             ? t('AI mode: correction prompts are included. ', 'Mode IA : les prompts de correction sont inclus. ')
             : t('Human mode: no prompt is included. ', 'Mode Humain : aucun prompt n’est inclus. ')) +
@@ -3610,6 +4029,15 @@ export default function Home() {
               folder,
               prompt,
             );
+          } else if (tab.kind === 'model') {
+            const packagedProject = packagedModelProjects.get(tab.id) || tab.project;
+            const generatedPrompt = options.includePrompt
+              ? withWorkspaceInstructions(buildModelPrompt(packagedProject, locale), locale)
+              : undefined;
+            const prompt = options.includePrompt && options.delivery && tab.id === activeTabId && exportPrompt
+              ? exportPrompt
+              : generatedPrompt;
+            await addModelProjectToZip(zip, tab, packagedProject, folder, !isDeliveryExport, prompt);
           } else {
             const packagedProject = packagedImageProjects.get(tab.id) || tab.project;
             const annotatedFileName = shouldOptimizeImages ? 'annotated.webp' : 'annotated.png';
@@ -3642,16 +4070,83 @@ export default function Home() {
         }
       }
       const containerLabel = options.container === 'project' ? t('CyAnnota project', 'projet CyAnnota') : 'ZIP';
-      setExportProgressLabel(t('Compressing ', 'Compression du ') + containerLabel + '…');
-      const archive = await zip.generateAsync(
-        {
-          type: 'blob',
-          mimeType: options.container === 'project' ? 'application/x-cyannota' : 'application/zip',
-          compression: 'DEFLATE',
-          compressionOptions: { level: 6 },
-        },
-        (metadata) => setExportProgressLabel(t('Compressing ', 'Compression du ') + containerLabel + ' · ' + Math.round(metadata.percent) + '%'),
-      );
+      const bridge = options.target === 'integration' ? integrationBridgeRef.current : null;
+      if (options.target === 'integration' && !bridge) {
+        throw new Error(t('The integration session has expired.', 'La session d’intégration a expiré.'));
+      }
+      const resultMode = bridge?.resultMode || 'archive';
+      let archive: Blob | undefined;
+      if (!bridge || resultMode !== 'direct') {
+        setExportProgressLabel(t('Compressing ', 'Compression du ') + containerLabel + '…');
+        archive = await zip.generateAsync(
+          {
+            type: 'blob',
+            mimeType: options.container === 'project' ? 'application/x-cyannota' : 'application/zip',
+            compression: 'DEFLATE',
+            compressionOptions: { level: 6 },
+          },
+          (metadata) => setExportProgressLabel(t('Compressing ', 'Compression du ') + containerLabel + ' · ' + Math.round(metadata.percent) + '%'),
+        );
+      }
+      if (bridge) {
+        setExportProgressLabel(t('Preparing the integrated result…', 'Préparation du résultat intégré…'));
+        const files = resultMode === 'archive' ? undefined : await createDirectPackageFiles(zip);
+        const resultBytes = (archive?.size || 0) + (files || []).reduce(
+          (size, file) => size + file.size,
+          0,
+        );
+        if (resultBytes > bridge.maximumResultBytes) {
+          throw new Error(
+            t('The integrated result exceeds the size accepted by ', 'Le résultat intégré dépasse la taille acceptée par ') +
+              bridge.providerLabel,
+          );
+        }
+        bridge.hostWindow.postMessage({
+          source: 'cyannota',
+          type: 'send-result',
+          protocol: 'cyannota.integration',
+          protocolVersion: bridge.protocolVersion,
+          session: bridge.session,
+          attachmentId: bridge.attachmentId,
+          archiveName: packageName,
+          archive,
+          files,
+          document: workspaceDocument,
+          manifest,
+          thumbnail,
+          summary: {
+            title: manifest.title,
+            tabCount: manifest.tabCount,
+            imageCount: manifest.imageCount,
+            videoCount: manifest.videoCount,
+            modelCount: manifest.modelCount,
+            annotationCount: manifest.correctionCount,
+          },
+          exportPreferences: {
+            audience: exportAudience,
+            container: exportContainer,
+            includeOriginalVideos: includeOriginalVideosInExport,
+            optimizeImages: optimizeImagesInExport,
+            locale,
+            resultMode,
+          },
+        }, bridge.parentOrigin);
+        setSaveStatus(t('Sending to ', 'Envoi vers ') + bridge.providerLabel + '…');
+        setExportProgressLabel(t('Waiting for confirmation…', 'En attente de confirmation…'));
+        return true;
+      }
+      if (!archive) throw new Error(t('Generated package unavailable.', 'Paquet généré indisponible.'));
+      if (options.target === 'clipboard') {
+        setExportProgressLabel(t('Copying ZIP to clipboard…', 'Copie du ZIP dans le presse-papiers…'));
+        const copyResult = await copyBlobAsFileToClipboard(archive, packageName);
+        setSaveStatus(t('ZIP copied to clipboard', 'ZIP copié dans le presse-papiers'));
+        setExportProgressLabel(t('ZIP ready to paste', 'ZIP prêt à être collé'));
+        showImportNotice(
+          t('“', '« ') + copyResult.fileName + t('” copied — paste it directly into the destination.', ' » copié — colle-le directement dans la destination.'),
+        );
+        return true;
+      }
+      if (!preparedSave) throw new Error(t('Save destination unavailable.', 'Destination de sauvegarde indisponible.'));
       const saveResult = await savePreparedBlob(archive, preparedSave, {
         copyToClipboard: options.copyToClipboard === true,
       });
@@ -3688,10 +4183,16 @@ export default function Home() {
       return saved;
     } catch (error) {
       const message = error instanceof Error ? error.message : t('unknown error', 'erreur inconnue');
-      setSaveStatus(t('CyAnnota save failed', 'Échec de l’enregistrement CyAnnota'));
-      setExportProgressLabel(t('Encoding or export failed', 'Encodage ou export impossible'));
-      showImportNotice(t('Save failed: ', 'Enregistrement impossible : ') + message);
-      await showSaveFailure(t('Unable to save the CyAnnota file.', 'Impossible d’enregistrer le fichier CyAnnota.'), error);
+      const clipboardTarget = options.target === 'clipboard';
+      setSaveStatus(clipboardTarget ? t('Clipboard copy failed', 'Échec de la copie') : t('CyAnnota save failed', 'Échec de l’enregistrement CyAnnota'));
+      setExportProgressLabel(clipboardTarget ? t('Unable to copy the ZIP', 'Impossible de copier le ZIP') : t('Encoding or export failed', 'Encodage ou export impossible'));
+      showImportNotice((clipboardTarget ? t('Copy failed: ', 'Copie impossible : ') : t('Save failed: ', 'Enregistrement impossible : ')) + message);
+      await showSaveFailure(
+        clipboardTarget ? t('Unable to copy the ZIP to the clipboard.', 'Impossible de copier le ZIP dans le presse-papiers.') : t('Unable to save the CyAnnota file.', 'Impossible d’enregistrer le fichier CyAnnota.'),
+        error,
+        clipboardTarget ? 'CyAnnota - erreur du presse-papiers' : undefined,
+        clipboardTarget ? 'Aucun fichier enregistré n’a été modifié. Vous pouvez fermer cette fenêtre et réessayer.' : undefined,
+      );
       throw error;
     } finally {
       setIsExporting(false);
@@ -3753,6 +4254,7 @@ export default function Home() {
       0,
     );
     const videoCount = tabs.filter((tab) => tab.kind === 'video').length;
+    const modelCount = tabs.filter((tab) => tab.kind === 'model').length;
     const imageCount = tabs.filter((tab) => tab.kind === 'image' && Boolean(tab.project.image)).length;
     const gifCount = tabs.filter(
       (tab) => tab.kind === 'video' && isGifFile(tab.file),
@@ -3772,7 +4274,7 @@ export default function Home() {
           <header className="modal-header">
             <div>
               <p className="eyebrow">{t('COMPLETE CORRECTION PACKAGE', 'PAQUET DE CORRECTIONS COMPLET')}</p>
-              <h2>{exportAudience === 'human' ? t('Package ready for a person', 'Dossier prêt pour une personne') : t('Images and videos ready for AI', 'Images et vidéos prêtes pour une IA')}</h2>
+              <h2>{exportAudience === 'human' ? t('Package ready for a person', 'Dossier prêt pour une personne') : t('Images, videos, and 3D models ready for AI', 'Images, vidéos et modèles 3D prêts pour une IA')}</h2>
               <p>{exportAudience === 'human' ? t('The package contains media, annotations, and thumbnails, with no prompt.', 'Le paquet contient les médias, les annotations et la miniature, sans aucun prompt.') : t('The package also contains structured prompts for sending corrections to an AI.', 'Le paquet contient aussi les prompts structurés pour transmettre les corrections à une IA.')}</p>
             </div>
             <button className="modal-close" aria-label={t('Close', 'Fermer')} onClick={() => setExportOpen(false)}>×</button>
@@ -3782,6 +4284,7 @@ export default function Home() {
             <div><strong>{tabs.length}</strong><span>{t('tabs', 'onglets')}</span></div>
             <div><strong>{correctionCount}</strong><span>{t('corrections', 'corrections')}</span></div>
             <div><strong>{videoCount}</strong><span>{t('videos', 'vidéos')}</span></div>
+            <div><strong>{modelCount}</strong><span>{t('3D models', 'modèles 3D')}</span></div>
             <div><strong>{frameStopCount}</strong><span>{t('frame stops', 'arrêts image')}</span></div>
           </div>
 
@@ -3884,40 +4387,59 @@ export default function Home() {
               </span>
             </label>
           )}
-          <label className="export-original-option">
-            <input
-              type="checkbox"
-              checked={copyExportToClipboard}
-              disabled={isExporting}
-              onChange={(event) => setCopyExportToClipboard(event.target.checked)}
-            />
-            <span>
-              <strong>{t('Copy exported file to clipboard', 'Copier le fichier exporté dans le presse-papiers')}</strong>
-              <small>{t('Desktop: paste the saved file directly into Discord or Explorer. Web support depends on the browser.', 'Bureau : colle directement le fichier enregistré dans Discord ou l’Explorateur. Sur le Web, cela dépend du navigateur.')}</small>
-            </span>
-          </label>
+          {!integrationBridge && (
+            <label className="export-original-option">
+              <input
+                type="checkbox"
+                checked={copyExportToClipboard}
+                disabled={isExporting}
+                onChange={(event) => setCopyExportToClipboard(event.target.checked)}
+              />
+              <span>
+                <strong>{t('Copy exported file to clipboard', 'Copier le fichier exporté dans le presse-papiers')}</strong>
+                <small>{t('Desktop: paste the saved file directly into Discord or Explorer. Web support depends on the browser.', 'Bureau : colle directement le fichier enregistré dans Discord ou l’Explorateur. Sur le Web, cela dépend du navigateur.')}</small>
+              </span>
+            </label>
+          )}
             {isExporting && <div className="export-encoding-status"><span className="status-dot" /><strong>{exportProgressLabel || t('Local encoding in progress…', 'Encodage local en cours…')}</strong></div>}
 
           <footer className="modal-actions">
-            {exportAudience === 'ai' && (
+            {!integrationBridge && exportAudience === 'ai' && (
               <button className="button ghost" onClick={() => copyPrompt().catch(() => undefined)}>{t('Copy prompt', 'Copier le prompt')}</button>
             )}
-            {activeTab?.kind === 'image' && activeTab.project.image && (
+            {!integrationBridge && activeTab?.kind === 'image' && activeTab.project.image && (
               <button className="button ghost" onClick={() => downloadAnnotatedImage().catch(() => undefined)}>{t('Annotated image', 'Image annotée')}</button>
+            )}
+            {!integrationBridge && (
+              <button
+                className="button ghost"
+                onClick={() => downloadPackage({
+                  delivery: true,
+                  includePrompt: exportAudience === 'ai',
+                  container: 'zip',
+                  target: 'clipboard',
+                }).catch(() => undefined)}
+                disabled={isExporting}
+              >
+                {t('Copy ZIP', 'Copier le ZIP')}
+              </button>
             )}
             <button
               className="button primary large"
               onClick={() => downloadPackage({
                 delivery: true,
                 includePrompt: exportAudience === 'ai',
-                copyToClipboard: copyExportToClipboard,
+                copyToClipboard: !integrationBridge && copyExportToClipboard,
                 container: exportContainer,
+                target: integrationBridge ? 'integration' : 'save',
+              }).then((completed) => {
+                if (completed && integrationBridge) setExportOpen(false);
               }).catch(() => undefined)}
               disabled={isExporting}
             >
               {isExporting
                 ? t('Encoding and creating…', 'Encodage et création en cours…')
-                : t('Export', 'Exporter') + ' · ' + (exportAudience === 'human' ? t('Human', 'Humain') : t('AI', 'IA')) + ' · ' + (exportContainer === 'project' ? '.cyannota' : 'ZIP')}
+                : (integrationBridge ? t('Send', 'Envoyer') : t('Export', 'Exporter')) + ' · ' + (exportAudience === 'human' ? t('Human', 'Humain') : t('AI', 'IA')) + ' · ' + (exportContainer === 'project' ? '.cyannota' : 'ZIP')}
             </button>
           </footer>
         </section>
@@ -3950,7 +4472,7 @@ export default function Home() {
               key={tab.id}
               className={
                 'board-tab ' +
-                (tab.kind === 'video' ? 'media-video ' : 'media-image ') +
+                (tab.kind === 'video' ? 'media-video ' : tab.kind === 'model' ? 'media-model ' : 'media-image ') +
                 (tab.id === activeTabId ? 'active' : '')
               }
               role="presentation"
@@ -3963,17 +4485,19 @@ export default function Home() {
                 title={tab.label}
               >
                 <span className="board-tab-index">
-                  {tab.kind === 'video' ? 'VID' : String(index + 1).padStart(2, '0')}
+                  {tab.kind === 'video' ? 'VID' : tab.kind === 'model' ? '3D' : String(index + 1).padStart(2, '0')}
                 </span>
                 <span className="board-tab-label">{tab.label}</span>
               </button>
-              <button
-                className="board-tab-close"
-                aria-label={t('Close ', 'Fermer ') + tab.label}
-                onClick={() => closeTab(tab.id)}
-              >
-                ×
-              </button>
+              {!integrationBridge && (
+                <button
+                  className="board-tab-close"
+                  aria-label={t('Close ', 'Fermer ') + tab.label}
+                  onClick={() => closeTab(tab.id)}
+                >
+                  ×
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -4009,11 +4533,18 @@ export default function Home() {
           onOpenWorkspace={integrationBridge ? undefined : () => projectInputRef.current?.click()}
           onAddImage={integrationBridge ? undefined : () => imageInputRef.current?.click()}
           onAddVideo={integrationBridge ? undefined : () => videoInputRef.current?.click()}
+          onAddModel={integrationBridge ? undefined : () => modelInputRef.current?.click()}
           onSaveWorkspace={() => {
             if (integrationBridge) sendIntegrationDocument(activeTab.project);
             else saveProjectFile().catch(() => undefined);
           }}
           onExportWorkspace={openExport}
+          integration={integrationBridge ? {
+            providerLabel: integrationBridge.providerLabel,
+            readOnly: integrationBridge.readOnly,
+            onSend: () => { void sendIntegrationPackage(); },
+            onClose: () => closeIntegration('cancel'),
+          } : undefined}
           onEditWorkspaceMessage={() => setWorkspaceMessageOpen(true)}
           workspaceInstructions={workspaceInstructions}
           locale={locale}
@@ -4049,6 +4580,58 @@ export default function Home() {
             event.target.value = '';
           }}
         />
+        <input
+          ref={modelInputRef}
+          hidden
+          multiple
+          type="file"
+          accept=".glb,.gltf,.fbx,.obj,.usd,.usda,.usdc,.usdz,.blend,.bin,.png,.jpg,.jpeg,.webp,.ktx,.ktx2,model/gltf-binary,model/gltf+json"
+          onChange={(event: ChangeEvent<HTMLInputElement>) => {
+            loadModelFiles(event.target.files || undefined).catch(() => undefined);
+            event.target.value = '';
+          }}
+        />
+        {renderExportDialog()}
+        {renderWorkspaceMessageDialog()}
+      </>
+    );
+  }
+
+  if (activeTab?.kind === 'model') {
+    return (
+      <>
+        <ModelAnnotator
+          key={activeTab.id}
+          file={activeTab.convertedFile}
+          initialProject={activeTab.project}
+          onProjectChange={(project) => updateModelTab(activeTab.id, project)}
+          tabBar={renderMediaTabs()}
+          workspaceStatus={saveStatus}
+          workspaceBusy={isExporting}
+          onOpenWorkspace={integrationBridge ? undefined : () => projectInputRef.current?.click()}
+          onAddImage={integrationBridge ? undefined : () => imageInputRef.current?.click()}
+          onAddVideo={integrationBridge ? undefined : () => videoInputRef.current?.click()}
+          onAddModel={integrationBridge ? undefined : () => modelInputRef.current?.click()}
+          onSaveWorkspace={() => {
+            if (integrationBridge) sendIntegrationDocument(activeTab.project);
+            else saveProjectFile().catch(() => undefined);
+          }}
+          onExportWorkspace={openExport}
+          integration={integrationBridge ? {
+            providerLabel: integrationBridge.providerLabel,
+            readOnly: integrationBridge.readOnly,
+            onSend: () => { void sendIntegrationPackage(); },
+            onClose: () => closeIntegration('cancel'),
+          } : undefined}
+          onEditWorkspaceMessage={() => setWorkspaceMessageOpen(true)}
+          workspaceInstructions={workspaceInstructions}
+          locale={locale}
+          onLocaleChange={changeLocale}
+        />
+        <input ref={projectInputRef} hidden type="file" accept=".cyannota,.json,.annota.json,.zip,application/x-cyannota,application/json,application/zip" onChange={(event) => { openProjectFile(event.target.files?.[0]).catch(() => undefined); event.target.value = ''; }} />
+        <input ref={videoInputRef} hidden type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,image/gif,.mp4,.webm,.ogg,.mov,.m4v,.gif" onChange={(event) => { loadVideoFile(event.target.files?.[0]); event.target.value = ''; }} />
+        <input ref={imageInputRef} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { loadImageFile(event.target.files?.[0]).catch(() => undefined); event.target.value = ''; }} />
+        <input ref={modelInputRef} hidden multiple type="file" accept=".glb,.gltf,.fbx,.obj,.usd,.usda,.usdc,.usdz,.blend,.bin,.png,.jpg,.jpeg,.webp,.ktx,.ktx2,model/gltf-binary,model/gltf+json" onChange={(event) => { loadModelFiles(event.target.files || undefined).catch(() => undefined); event.target.value = ''; }} />
         {renderExportDialog()}
         {renderWorkspaceMessageDialog()}
       </>
@@ -4063,7 +4646,7 @@ export default function Home() {
           <img className="brand-mark" src="/cyannota-logo.png" alt="" />
           <div>
             <strong>CyAnnota</strong>
-            <span className="brand-subtitle">{t('Image and video annotations', 'Annotations image et vidéo')}</span>
+            <span className="brand-subtitle">{t('Image, video, and 3D annotations', 'Annotations image, vidéo et 3D')}</span>
             <VersionStatus locale={locale} />
           </div>
         </div>
@@ -4118,18 +4701,45 @@ export default function Home() {
               <button className="button ghost compact" onClick={() => videoInputRef.current?.click()}>
                 {t('Video', 'Vidéo')}
               </button>
+              <button className="button ghost compact" onClick={() => modelInputRef.current?.click()}>
+                3D
+              </button>
             </>
           )}
-          <button
-            className="button ghost compact"
-            onClick={() => saveProjectFile().catch(() => undefined)}
-            disabled={!hasExportableMedia || isExporting}
-          >
-            {integrationBridge ? t('Save to ', 'Sauver dans ') + integrationBridge.providerLabel : t('Save', 'Sauver')}
-          </button>
-          <button className="button primary" onClick={openExport} disabled={!hasExportableMedia}>
-            {t('Export', 'Exporter')}
-          </button>
+          {integrationBridge ? (
+            <>
+              {!integrationBridge.readOnly && (
+                <button className="button ghost compact" onClick={openExport}>
+                  {t('Options', 'Options')}
+                </button>
+              )}
+              <button className="button ghost compact" onClick={() => closeIntegration('cancel')}>
+                {t('Close', 'Fermer')}
+              </button>
+              {!integrationBridge.readOnly && (
+                <button
+                  className="button primary"
+                  onClick={() => { void sendIntegrationPackage(); }}
+                  disabled={!hasExportableMedia || isExporting}
+                >
+                  {isExporting ? t('Preparing…', 'Préparation…') : t('Send', 'Envoyer')}
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <button
+                className="button ghost compact"
+                onClick={() => saveProjectFile().catch(() => undefined)}
+                disabled={!hasExportableMedia || isExporting}
+              >
+                {t('Save', 'Sauver')}
+              </button>
+              <button className="button primary" onClick={openExport} disabled={!hasExportableMedia}>
+                {t('Export', 'Exporter')}
+              </button>
+            </>
+          )}
         </div>
 
         <input
@@ -4149,6 +4759,17 @@ export default function Home() {
           accept="video/mp4,video/webm,video/ogg,video/quicktime,image/gif,.mp4,.webm,.ogg,.mov,.m4v,.gif"
           onChange={(event: ChangeEvent<HTMLInputElement>) => {
             loadVideoFile(event.target.files?.[0]);
+            event.target.value = '';
+          }}
+        />
+        <input
+          ref={modelInputRef}
+          hidden
+          multiple
+          type="file"
+          accept=".glb,.gltf,.fbx,.obj,.usd,.usda,.usdc,.usdz,.blend,.bin,.png,.jpg,.jpeg,.webp,.ktx,.ktx2,model/gltf-binary,model/gltf+json"
+          onChange={(event: ChangeEvent<HTMLInputElement>) => {
+            loadModelFiles(event.target.files || undefined).catch(() => undefined);
             event.target.value = '';
           }}
         />
@@ -4248,14 +4869,17 @@ export default function Home() {
               <div className="drop-card">
                 <div className="drop-icon">⌁</div>
                 <p className="eyebrow">{t('NEW BOARD', 'NOUVELLE PLANCHE')}</p>
-                <h1>{t('Drop an image or video', 'Dépose une image ou une vidéo')}</h1>
-                <p>{t('PNG, JPG, WebP, video, or animated GIF — every file remains on this computer.', 'PNG, JPG, WebP, vidéo ou GIF animé — tous les fichiers restent sur cet ordinateur.')}</p>
+                <h1>{t('Drop an image, video, or 3D model', 'Dépose une image, une vidéo ou un modèle 3D')}</h1>
+                <p>{t('PNG, JPG, WebP, video, GIF, GLB, glTF, FBX, OBJ, or USDZ — every file remains on this computer.', 'PNG, JPG, WebP, vidéo, GIF, GLB, glTF, FBX, OBJ ou USDZ — tous les fichiers restent sur cet ordinateur.')}</p>
                 <div className="import-actions">
                   <button className="button primary large" onClick={() => imageInputRef.current?.click()}>
                     {t('Choose an image', 'Choisir une image')}
                   </button>
                   <button className="button ghost large" onClick={() => videoInputRef.current?.click()}>
                     {t('Choose a video', 'Choisir une vidéo')}
+                  </button>
+                  <button className="button ghost large" onClick={() => modelInputRef.current?.click()}>
+                    {t('Choose a 3D model', 'Choisir un modèle 3D')}
                   </button>
                   <button className="button ghost large" onClick={() => pasteMediaFromClipboard().catch(() => undefined)}>
                     {t('Paste media', 'Coller un média')}

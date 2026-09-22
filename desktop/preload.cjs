@@ -15,6 +15,8 @@ ipcRenderer.on('cyannota:open-files', (_event, items) => {
 contextBridge.exposeInMainWorld('cyAnnotaDesktop', {
   chooseSaveFile: ({ name }) =>
     ipcRenderer.invoke('cyannota:choose-save-file', { name }),
+  prepareClipboardFile: ({ name }) =>
+    ipcRenderer.invoke('cyannota:prepare-clipboard-file', { name }),
   readClipboardFiles: () =>
     ipcRenderer.invoke('cyannota:read-clipboard-files'),
   beginSaveFile: ({ token }) =>
@@ -23,6 +25,8 @@ contextBridge.exposeInMainWorld('cyAnnotaDesktop', {
     ipcRenderer.invoke('cyannota:write-save-chunk', { token, base64 }),
   finishSaveFile: ({ token, copyToClipboard }) =>
     ipcRenderer.invoke('cyannota:finish-save-file', { token, copyToClipboard }),
+  finishClipboardFile: ({ token }) =>
+    ipcRenderer.invoke('cyannota:finish-clipboard-file', { token }),
   abortSaveFile: ({ token }) =>
     ipcRenderer.invoke('cyannota:abort-save-file', { token }),
   showErrorMessage: ({ title, message, detail }) =>

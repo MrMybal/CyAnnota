@@ -1,6 +1,8 @@
 # Intégrer CyAnnota
 
-CyAnnota expose un contrat local unique pour CyCapture, CyTask et les sites Web. Le média reste chez l’utilisateur : il est transmis à CyAnnota, annoté localement, puis seul le document d’annotations est rendu à l’application hôte.
+CyAnnota expose un contrat local unique pour CyCapture, CyTask, CyAIOrchestrator et les sites Web. L’éditeur peut être ouvert dans une fenêtre ou directement intégré dans une iframe. À la fin, le bouton **Envoyer** remet le résultat à l’application hôte ; **Fermer** quitte l’éditeur sans transmettre de résultat.
+
+Pour permettre à une IA visuelle de créer ou modifier directement des annotations spatiales et temporelles, consulter [`AI_AUTHORING.md`](AI_AUTHORING.md) et le schéma [`cyannota-ai.schema.json`](cyannota-ai.schema.json).
 
 ## Formats
 
@@ -12,7 +14,7 @@ CyAnnota expose un contrat local unique pour CyCapture, CyTask et les sites Web.
 
 Une sauvegarde `.cyannota` inclut les sources. Un export peut omettre les vidéos originales. En mode `human`, aucun `prompt.md` n’est écrit. En mode `ai`, les prompts structurés sont inclus.
 
-## Intégration Web, CyTask ou CyCapture Web
+## Intégration Web ou Electron
 
 Servir le SDK `public/cyannota-integration.js`, puis l’appeler depuis un clic utilisateur afin d’éviter le blocage des popups :
 
@@ -20,20 +22,33 @@ Servir le SDK `public/cyannota-integration.js`, puis l’appeler depuis un clic 
 <script src="http://localhost:3000/cyannota-integration.js"></script>
 <script>
   async function annotateCapture(file, existingDocument) {
+    const container = document.querySelector('#cyannota-editor');
     const editor = CyAnnotaIntegration.open({
       cyAnnotaUrl: 'http://localhost:3000/',
       integrationId: 'cycapture',
       integrationName: 'CyCapture',
       attachmentId: crypto.randomUUID(),
+      container,
       file,
       document: existingDocument,
       exportAudience: 'human',
       exportContainer: 'project',
       includeOriginalVideos: false,
+      resultMode: 'both',
+      closeOnSend: true,
       locale: 'fr',
-      async onSave({ attachmentId, document, exportPreferences }) {
-        await saveLocally(attachmentId, document, exportPreferences);
+      async onSend(result) {
+        // Archive prête à joindre à la conversation.
+        if (result.archive) {
+          await conversation.attach(CyAnnotaIntegration.archiveFile(result));
+        }
+
+        // Les mêmes éléments sont également accessibles sans relire le ZIP.
+        await saveDirectFiles(result.attachmentId, result.files, result.document);
         return { revision: 1 };
+      },
+      onClose() {
+        closeEditorPanel();
       },
     });
     await editor.ready;
@@ -41,9 +56,63 @@ Servir le SDK `public/cyannota-integration.js`, puis l’appeler depuis un clic 
 </script>
 ```
 
-Le protocole est `cyannota.integration`, version `1`. Les messages sont acceptés uniquement depuis la fenêtre d’origine et l’origine HTTP(S) exacte annoncée dans l’URL. L’hôte peut choisir les valeurs initiales d’export et récupère les éventuelles modifications de l’utilisateur dans `exportPreferences`. `locale` accepte `en` ou `fr` et vaut `en` par défaut ; cette langue s’applique à l’interface ainsi qu’aux prompts. Les capacités retournées par CyAnnota annoncent `locales: ['en', 'fr']` et `defaultLocale: 'en'`.
+Le protocole courant est `cyannota.integration`, version `2`. La version 1 reste acceptée pour les intégrations existantes. Le transfert du résultat se produit uniquement après le clic sur **Envoyer** et revient à la fenêtre ou à l’iframe ayant créé la session.
 
-Pour CyTask, utiliser `integrationId: 'cytask'` et conserver le document d’annotations à côté de la pièce jointe. L’image ou la vidéo originale n’est pas dupliquée dans ce document ; CyTask demeure propriétaire du média et de son stockage.
+`resultMode` contrôle le résultat :
+
+- `archive` : transmet uniquement le fichier `.cyannota` ou `.cyannota.zip` prêt à joindre ;
+- `direct` : transmet les fichiers sous forme de `{ path, type, size, blob }`, sans recréer ni relire un ZIP ;
+- `both` : transmet les deux représentations.
+
+Le résultat contient également `document`, `manifest`, `summary` et `thumbnail`. L’hôte peut fixer `maximumResultBytes`, choisir les réglages initiaux d’export et récupérer leur valeur finale dans `exportPreferences`. `locale` accepte `en` ou `fr` et vaut `en` par défaut.
+
+Pour CyTask, utiliser `integrationId: 'cytask'`. Le mode `direct` permet de stocker séparément le document et les médias remis par CyAnnota ; le mode `archive` conserve un fichier autonome ouvrable dans CyAnnota. CyTask reste libre de choisir la représentation adaptée à son stockage.
+
+## Ouvrir directement un projet CyAnnota
+
+Un fichier `.cyannota` peut être remis directement à l’éditeur intégré :
+
+```js
+CyAnnotaIntegration.open({
+  cyAnnotaUrl: 'http://localhost:3000/',
+  integrationId: 'cyaiorchestrator',
+  integrationName: 'CyAIOrchestrator',
+  attachmentId: messageAttachment.id,
+  container: document.querySelector('#annotation-panel'),
+  file: cyannotaFile,
+  mediaKind: 'project',
+  resultMode: 'archive',
+  onSend: (result) => conversation.attach(CyAnnotaIntegration.archiveFile(result)),
+});
+```
+
+## Lecture directe et mode miniature
+
+Une application peut lire le manifeste, la miniature, l’espace de travail ou un fichier interne sans gérer elle-même la structure du ZIP. Avec un bundler, transmettre simplement son import `JSZip` :
+
+```js
+import JSZip from 'jszip';
+
+const preview = await CyAnnotaIntegration.readPackage(cyannotaFile, { JSZip });
+const removePreview = CyAnnotaIntegration.mountPreview(
+  document.querySelector('#attachment-preview'),
+  preview,
+);
+
+console.log(preview.summary.tabCount);
+console.log(preview.summary.annotationCount);
+
+const workspace = preview.workspace;
+const firstAnnotatedPath = preview.files.find((path) =>
+  /(?:tabs|onglets)\/[^/]+\/images\/annotated\.(?:webp|png|jpe?g)$/i.test(path),
+);
+const firstAnnotatedImage = await preview.readFile(
+  firstAnnotatedPath,
+  'blob',
+);
+```
+
+`mountPreview` affiche la première image disponible, le nombre d’onglets et le nombre total d’annotations. Le résultat de `onSend` peut être passé directement à cette méthode, sans rouvrir l’archive. Pour un document JSON non compressé, utiliser `readDocument` ou `summarizeDocument`.
 
 ## Intégration desktop
 

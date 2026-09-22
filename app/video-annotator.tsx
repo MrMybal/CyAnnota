@@ -72,12 +72,19 @@ type VideoWorkspaceProps = {
   onOpenWorkspace?: () => void;
   onAddImage?: () => void;
   onAddVideo?: () => void;
+  onAddModel?: () => void;
   onSaveWorkspace?: () => void;
   onExportWorkspace?: () => void;
   onEditWorkspaceMessage?: () => void;
   workspaceInstructions?: string;
   workspaceStatus?: string;
   workspaceBusy?: boolean;
+  integration?: {
+    providerLabel: string;
+    readOnly: boolean;
+    onSend: () => void;
+    onClose: () => void;
+  };
   locale: AppLocale;
   onLocaleChange: (locale: AppLocale) => void;
 };
@@ -583,12 +590,14 @@ export default function VideoAnnotator({
   onOpenWorkspace,
   onAddImage,
   onAddVideo,
+  onAddModel,
   onSaveWorkspace,
   onExportWorkspace,
   onEditWorkspaceMessage,
   workspaceInstructions = '',
   workspaceStatus,
   workspaceBusy = false,
+  integration,
   locale,
   onLocaleChange,
 }: VideoWorkspaceProps) {
@@ -1781,13 +1790,33 @@ export default function VideoAnnotator({
               onClick={onEditWorkspaceMessage}
             >{t('Global message', 'Message global')}</button>
           )}
-          {onOpenWorkspace && <button className="button ghost compact" onClick={onOpenWorkspace}>{t('Open', 'Ouvrir')}</button>}
-          {onAddImage && <button className="button ghost compact" onClick={onAddImage}>{t('Image', 'Image')}</button>}
-          {onAddVideo && <button className="button ghost compact" onClick={onAddVideo}>{t('Video', 'Vidéo')}</button>}
-          <button className="button ghost compact" onClick={() => copyPrompt().catch(() => undefined)}>Prompt</button>
-          <button className="button ghost compact" onClick={() => setCompressionOpen(true)} disabled={isPreparingPreview || isExtractingFrame}>{t('Compress', 'Compresser')}</button>
-          <button className="button ghost compact" onClick={onSaveWorkspace || (() => saveProject().catch(() => undefined))} disabled={workspaceBusy}>{workspaceBusy ? t('Encoding…', 'Encodage…') : t('Save', 'Sauver')}</button>
-          {onExportWorkspace && <button className="button primary" onClick={onExportWorkspace} disabled={workspaceBusy}>{t('Export', 'Exporter')}</button>}
+          {integration ? (
+            <>
+              <span className="cytask-bridge-badge">
+                {integration.providerLabel + (integration.readOnly ? t(' · read-only', ' · consultation') : t(' · linked', ' · lié'))}
+              </span>
+              {!integration.readOnly && onExportWorkspace && (
+                <button className="button ghost compact" onClick={onExportWorkspace}>{t('Options', 'Options')}</button>
+              )}
+              <button className="button ghost compact" onClick={integration.onClose}>{t('Close', 'Fermer')}</button>
+              {!integration.readOnly && (
+                <button className="button primary" onClick={integration.onSend} disabled={workspaceBusy}>
+                  {workspaceBusy ? t('Preparing…', 'Préparation…') : t('Send', 'Envoyer')}
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              {onOpenWorkspace && <button className="button ghost compact" onClick={onOpenWorkspace}>{t('Open', 'Ouvrir')}</button>}
+              {onAddImage && <button className="button ghost compact" onClick={onAddImage}>{t('Image', 'Image')}</button>}
+              {onAddVideo && <button className="button ghost compact" onClick={onAddVideo}>{t('Video', 'Vidéo')}</button>}
+              {onAddModel && <button className="button ghost compact" onClick={onAddModel}>3D</button>}
+              <button className="button ghost compact" onClick={() => copyPrompt().catch(() => undefined)}>Prompt</button>
+              <button className="button ghost compact" onClick={() => setCompressionOpen(true)} disabled={isPreparingPreview || isExtractingFrame}>{t('Compress', 'Compresser')}</button>
+              <button className="button ghost compact" onClick={onSaveWorkspace || (() => saveProject().catch(() => undefined))} disabled={workspaceBusy}>{workspaceBusy ? t('Encoding…', 'Encodage…') : t('Save', 'Sauver')}</button>
+              {onExportWorkspace && <button className="button primary" onClick={onExportWorkspace} disabled={workspaceBusy}>{t('Export', 'Exporter')}</button>}
+            </>
+          )}
         </div>
       </header>
 

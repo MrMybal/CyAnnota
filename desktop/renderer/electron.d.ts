@@ -11,6 +11,12 @@ declare global {
         fileName?: string;
         renamed?: boolean;
       }>;
+      prepareClipboardFile(input: {
+        name: string;
+      }): Promise<{
+        token: string;
+        fileName: string;
+      }>;
       readClipboardFiles(): Promise<Array<{
         name: string;
         type: string;
@@ -33,6 +39,13 @@ declare global {
         copyError?: string;
         fileName?: string;
         renamed?: boolean;
+      }>;
+      finishClipboardFile(input: {
+        token: string;
+      }): Promise<{
+        copied: boolean;
+        bytesWritten: number;
+        fileName: string;
       }>;
       abortSaveFile(input: {
         token: string;

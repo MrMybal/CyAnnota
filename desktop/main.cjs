@@ -28,6 +28,7 @@ if (!hasSingleInstanceLock) {
 
 let mainWindow = null;
 let lastSaveDirectory = null;
+let lastClipboardTempDirectory = null;
 const pendingSavePaths = new Map();
 const pendingOpenPaths = [];
 const SUPPORTED_OPEN_EXTENSIONS = new Set([
@@ -210,11 +211,16 @@ function assertTrustedSender(event) {
   }
 }
 
-function saveDialogOptions(name) {
-  const suggestedName =
+function safeDesktopFileName(name, fallback = 'cyannota-espace-de-travail.zip') {
+  return (
     typeof name === 'string'
       ? path.basename(name).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
-      : 'cyannota-espace-de-travail.zip';
+      : fallback
+  ) || fallback;
+}
+
+function saveDialogOptions(name) {
+  const suggestedName = safeDesktopFileName(name);
   const extension = path.extname(suggestedName).toLowerCase();
   const filters =
     extension === '.cyannota'
@@ -279,7 +285,11 @@ async function abortPendingSave(token, pending) {
   try {
     await closePendingHandle(pending);
   } finally {
-    await fs.rm(pending.tempPath, { force: true }).catch(() => undefined);
+    if (pending.clipboardDirectory) {
+      await fs.rm(pending.clipboardDirectory, { recursive: true, force: true }).catch(() => undefined);
+    } else {
+      await fs.rm(pending.tempPath, { force: true }).catch(() => undefined);
+    }
     pendingSavePaths.delete(token);
   }
 }
@@ -340,6 +350,28 @@ function registerDesktopIpc() {
       fileName: path.basename(target.filePath),
       renamed: target.renamed,
     };
+  });
+
+  ipcMain.handle('cyannota:prepare-clipboard-file', async (event, payload) => {
+    assertTrustedSender(event);
+    const token = randomUUID();
+    const clipboardDirectory = path.join(app.getPath('temp'), 'CyAnnota Clipboard', token);
+    const fileName = safeDesktopFileName(payload?.name);
+    const filePath = path.join(clipboardDirectory, fileName);
+    await fs.mkdir(clipboardDirectory, { recursive: true });
+    pendingSavePaths.set(token, {
+      filePath,
+      requestedPath: filePath,
+      renamed: false,
+      tempPath: filePath,
+      clipboardDirectory,
+      clipboardOnly: true,
+      senderId: event.sender.id,
+      createdAt: Date.now(),
+      handle: null,
+      bytesWritten: 0,
+    });
+    return { token, fileName };
   });
 
   ipcMain.handle('cyannota:begin-save-file', async (event, payload) => {
@@ -431,6 +463,40 @@ function registerDesktopIpc() {
         copyError,
         fileName: path.basename(pending.filePath),
         renamed: pending.renamed === true,
+      };
+    } catch (error) {
+      await abortPendingSave(token, pending);
+      throw new Error(saveErrorDetail(error, pending.filePath));
+    }
+  });
+
+  ipcMain.handle('cyannota:finish-clipboard-file', async (event, payload) => {
+    assertTrustedSender(event);
+    const { token, pending } = getPendingSave(event, payload);
+    if (!pending.clipboardOnly || !pending.clipboardDirectory) {
+      throw new Error('Ce transfert n’est pas destiné au presse-papiers.');
+    }
+    if (!pending.handle) {
+      throw new Error('Aucune écriture n’est en cours pour ce fichier.');
+    }
+
+    try {
+      await pending.handle.sync();
+      await closePendingHandle(pending);
+      if (!pending.bytesWritten) throw new Error('Le fichier généré est vide.');
+      await copyFileReferenceToClipboard(pending.filePath);
+      pendingSavePaths.delete(token);
+
+      const previousDirectory = lastClipboardTempDirectory;
+      lastClipboardTempDirectory = pending.clipboardDirectory;
+      if (previousDirectory && previousDirectory !== pending.clipboardDirectory) {
+        await fs.rm(previousDirectory, { recursive: true, force: true }).catch(() => undefined);
+      }
+
+      return {
+        copied: true,
+        bytesWritten: pending.bytesWritten,
+        fileName: path.basename(pending.filePath),
       };
     } catch (error) {
       await abortPendingSave(token, pending);

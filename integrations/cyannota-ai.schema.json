@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MrMybal/CyAnnota/blob/main/integrations/cyannota-ai.schema.json",
+  "title": "CyAnnota AI authoring document",
+  "type": "object",
+  "required": ["format", "version", "title", "locale", "workspaceMessage", "tabs"],
+  "additionalProperties": false,
+  "properties": {
+    "format": { "const": "cyannota-ai" },
+    "version": { "const": 1 },
+    "title": { "type": "string" },
+    "locale": { "enum": ["en", "fr"] },
+    "workspaceMessage": { "type": "string" },
+    "tabs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/tab" }
+    }
+  },
+  "$defs": {
+    "point": {
+      "type": "object",
+      "required": ["x", "y"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "box": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    },
+    "annotation": {
+      "type": "object",
+      "required": ["type", "message"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "enum": ["box", "arrow", "note", "freehand", "delete", "color", "frame", "shape"] },
+        "message": { "type": "string" },
+        "category": { "enum": ["modifier", "ajouter", "supprimer", "deplacer", "question"] },
+        "color": { "type": "string" },
+        "layerId": { "type": "string" },
+        "groupId": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "box": { "$ref": "#/$defs/box" },
+        "from": { "$ref": "#/$defs/point" },
+        "to": { "$ref": "#/$defs/point" },
+        "point": { "$ref": "#/$defs/point" },
+        "points": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/point" } },
+        "time": {
+          "type": "object",
+          "required": ["start", "end"],
+          "additionalProperties": false,
+          "properties": { "start": { "type": "number", "minimum": 0 }, "end": { "type": "number", "minimum": 0 } }
+        },
+        "shape": { "enum": ["rectangle", "ellipse", "line"] },
+        "fillColor": { "type": "string" },
+        "sampledColor": { "type": "string" },
+        "replacementColor": { "type": "string" }
+      }
+    },
+    "tab": {
+      "type": "object",
+      "required": ["id", "label", "kind", "width", "height", "annotations"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string" },
+        "kind": { "enum": ["image", "video", "gif"] },
+        "mediaName": { "type": "string" },
+        "mediaPath": { "type": "string" },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "duration": { "type": "number", "exclusiveMinimum": 0 },
+        "trimStart": { "type": "number", "minimum": 0 },
+        "trimEnd": { "type": "number", "minimum": 0 },
+        "message": { "type": "string" },
+        "annotations": { "type": "array", "items": { "$ref": "#/$defs/annotation" } }
+      }
+    }
+  }
+}

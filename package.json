@@ -1,6 +1,6 @@
 {
   "name": "cyannota",
-  "version": "0.3.10",
+  "version": "0.4.4",
   "license": "AGPL-3.0-only",
   "private": true,
   "engines": {
@@ -22,10 +22,12 @@
   "dependencies": {
     "@ffmpeg/core": "^0.12.10",
     "@ffmpeg/ffmpeg": "^0.12.15",
+    "@types/three": "^0.186.0",
     "jszip": "3.10.2",
     "next": "16.3.5",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "three": "^0.186.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.54.8",
