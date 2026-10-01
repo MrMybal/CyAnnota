@@ -797,7 +797,7 @@ export default function ModelAnnotator({
       <header className="model-topbar">
         <div className="brand">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="brand-mark" src="/cyannota-logo.png" alt="" />
+          <img className="brand-mark" src="./cyannota-logo.png" alt="" />
           <div><strong>CyAnnota 3D</strong><span className="brand-subtitle">{t('Local mesh annotations', 'Annotations locales de mesh')}</span><VersionStatus locale={locale} /></div>
         </div>
         <button className={'button ghost compact workspace-message-button' + (workspaceInstructions.trim() ? ' active' : '')} onClick={onEditWorkspaceMessage}>{t('Global message', 'Message global')}</button>

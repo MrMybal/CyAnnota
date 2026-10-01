@@ -6,6 +6,10 @@ CyAnnota est un outil local d’annotation d’images, de vidéos et de modèles
 
 > **Bêta :** CyAnnota est encore en développement. Certaines fonctionnalités peuvent évoluer ou contenir des bugs.
 
+[Ouvrir CyAnnota dans le navigateur, sans installation](https://mrmybal.github.io/CyAnnota/) · [Télécharger la version Windows](https://github.com/MrMybal/CyAnnota/releases/latest)
+
+La version en ligne s’exécute dans le navigateur : les médias importés et les conversions restent sur votre ordinateur. Sauvegardez vos projets `.cyannota` pour les conserver et les rouvrir dans la version Web ou Windows. Les exports Web utilisent les téléchargements du navigateur ; la copie d’un ZIP dans le presse-papiers dépend des formats autorisés par celui-ci. Un navigateur récent sur ordinateur est recommandé pour les vidéos et les modèles 3D.
+
 ## Aperçus
 
 ### Accueil et import des médias
@@ -51,6 +55,15 @@ Build Windows portable et installeur :
 ```bash
 npm run desktop:build
 ```
+
+Build statique pour GitHub Pages, séparé des compilations locale et Windows :
+
+```bash
+npm run pages:build
+npm run pages:preview
+```
+
+La sortie se trouve dans `dist/pages`. Par défaut, elle utilise le chemin `/CyAnnota/` ; `CYANNOTA_PAGES_BASE` permet de choisir un autre chemin. Le workflow `.github/workflows/pages.yml` construit et publie le site lors des envois sur `main`, des releases ou d’un lancement manuel. Le déploiement fournit aussi `source.zip`, contenant le code correspondant à la version Web publiée. Dans les paramètres GitHub Pages du dépôt, la source doit être **GitHub Actions**.
 
 Le contrat d’intégration est décrit dans [`integrations/README.md`](integrations/README.md).
 

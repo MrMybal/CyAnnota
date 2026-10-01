@@ -3871,8 +3871,9 @@ export default function Home() {
     setIsExporting(true);
     setExportProgressLabel(t('Preparing package…', 'Préparation du paquet…'));
     try {
-      const preparedSave = options.target === 'save' ? await prepareFileSave(packageName) : null;
-      if (options.target === 'save' && !preparedSave) {
+      const saveTarget = options.target ?? 'save';
+      const preparedSave = saveTarget === 'save' ? await prepareFileSave(packageName) : null;
+      if (saveTarget === 'save' && !preparedSave) {
         setSaveStatus(t('Save cancelled', 'Enregistrement annulé'));
         return false;
       }
@@ -4643,7 +4644,7 @@ export default function Home() {
       <header className="topbar">
         <div className="brand">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="brand-mark" src="/cyannota-logo.png" alt="" />
+          <img className="brand-mark" src="./cyannota-logo.png" alt="" />
           <div>
             <strong>CyAnnota</strong>
             <span className="brand-subtitle">{t('Image, video, and 3D annotations', 'Annotations image, vidéo et 3D')}</span>

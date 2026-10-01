@@ -1764,7 +1764,7 @@ export default function VideoAnnotator({
         <div className="video-brand">
           {onClose && <button className="video-back" onClick={onClose} aria-label={t('Back to images', 'Revenir aux images')}>←</button>}
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="brand-mark" src="/cyannota-logo.png" alt="" />
+          <img className="brand-mark" src="./cyannota-logo.png" alt="" />
           <div>
             <strong>{t('CyAnnota Video', 'CyAnnota Vidéo')}</strong>
             <span className="brand-subtitle">{t('Local timed annotations', 'Annotations temporelles locales')}</span>
