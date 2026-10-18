@@ -1,78 +1,90 @@
 # CyAnnota
 
-<p align="center"><img src="public/cyannota-logo.png" alt="Logo CyAnnota" width="160" /></p>
+**English** · [Français](README.fr.md)
 
-CyAnnota est un outil local d’annotation d’images, de vidéos et de modèles 3D. Il permet de préparer des retours visuels, de collaborer en équipe, de créer des arrêts sur image, de peindre des indications sur des meshes et d’exporter les annotations pour une personne ou une IA dans des projets réouvrables au format `.cyannota`.
+<p align="center"><img src="public/cyannota-logo.png" alt="CyAnnota logo" width="160" /></p>
 
-> **Bêta :** CyAnnota est encore en développement. Certaines fonctionnalités peuvent évoluer ou contenir des bugs.
+CyAnnota is a local annotation tool for images, videos and 3D models. Prepare visual feedback, collaborate with a team, create freeze frames, paint guidance on meshes, and export annotations for a person or an AI in reusable `.cyannota` projects.
 
-[Ouvrir CyAnnota dans le navigateur, sans installation](https://mrmybal.github.io/CyAnnota/) · [Télécharger la version Windows](https://github.com/MrMybal/CyAnnota/releases/latest)
+> **Beta:** CyAnnota is still under development. Some features may change or contain bugs.
 
-La version en ligne s’exécute dans le navigateur : les médias importés et les conversions restent sur votre ordinateur. Sauvegardez vos projets `.cyannota` pour les conserver et les rouvrir dans la version Web ou Windows. Les exports Web utilisent les téléchargements du navigateur ; la copie d’un ZIP dans le presse-papiers dépend des formats autorisés par celui-ci. Un navigateur récent sur ordinateur est recommandé pour les vidéos et les modèles 3D.
+[Open CyAnnota in your browser, without installation](https://mrmybal.github.io/CyAnnota/) · [Download the Windows version](https://github.com/MrMybal/CyAnnota/releases/latest)
 
-## Aperçus
+The online version runs in your browser: imported media and conversions stay on your computer. Save your `.cyannota` projects to keep them and reopen them in the Web or Windows version. Web exports use browser downloads; copying a ZIP to the clipboard depends on the formats allowed by the browser. A recent desktop browser is recommended for videos and 3D models.
 
-### Accueil et import des médias
+<a id="aperçus"></a>
 
-![Accueil de CyAnnota avec import d’image ou de vidéo](docs/screenshots/01-home.png)
+## Preview
 
-## Fonctions principales
+<a id="accueil-et-import-des-médias"></a>
 
-- annotations d’images avec cadres, formes, textes, couleurs, suppressions et découpes ;
-- annotations vidéo et GIF temporelles, avec arrêts sur image précis ;
-- annotations 3D par peinture indicative sur le mesh : modification, suppression, changement de couleur ou séparation ;
-- import GLB/glTF et conversion locale FBX, OBJ, USD, USDA, USDC et USDZ vers GLB, sans envoi vers un serveur ;
-- vues caméra enregistrées relativement au modèle ou au mesh annoté, avec captures incluses dans le projet ;
-- import par fichier, glisser-déposer ou `Ctrl+V` pour les images, vidéos et GIF ;
-- zoom et déplacement dans un espace de travail de type canvas ;
-- sauvegarde de plusieurs médias dans un projet `.cyannota` ;
-- exports Humain sans prompt et exports IA avec prompts structurés ;
-- export GIF ou MP4, optimisation locale des images en WebP, copie du fichier exporté dans le presse-papiers et renommage automatique sans écrasement ;
-- intégration locale avec CyTask, CyCapture, CyAIOrchestrator et des applications Web : éditeur embarqué, envoi direct, lecture du paquet et miniature ;
-- SDK AI authoring pour créer ou modifier des projets `.cyannota` avec des annotations spatiales et temporelles structurées ;
-- application Web locale et application Windows Electron ;
-- interface et prompts en anglais ou en français, avec l’anglais par défaut.
+### Home screen and media import
 
-Les fichiers `.blend` nécessitent Blender et doivent être exportés en GLB avant leur import dans CyAnnota.
+![CyAnnota home screen with image or video import](docs/screenshots/01-home.png)
 
-## Développement
+<a id="fonctions-principales"></a>
 
-Prérequis : Node.js 22.13 ou plus récent.
+## Main features
+
+- Image annotations with frames, shapes, text, colors, deletion and cropping.
+- Time-based video and GIF annotations with precise freeze frames.
+- 3D annotations painted as guidance on a mesh: edit, delete, recolor or split them.
+- GLB/glTF import and local conversion of FBX, OBJ, USD, USDA, USDC and USDZ to GLB, without uploading to a server.
+- Camera views saved relative to the model or annotated mesh, with screenshots included in the project.
+- Import images, videos and GIFs through a file picker, drag and drop or `Ctrl+V`.
+- Zoom and pan in a canvas-style workspace.
+- Save multiple media items in a `.cyannota` project.
+- Human exports without prompts, and AI exports with structured prompts.
+- GIF or MP4 export, local WebP image optimization, copying exported files to the clipboard, and automatic renaming without overwriting.
+- Local integration with CyTask, CyCapture, CyAIOrchestrator and Web applications: embedded editor, direct sending, package reading and thumbnails.
+- AI authoring SDK to create or edit `.cyannota` projects with structured spatial and temporal annotations.
+- Local Web application and Windows Electron application.
+- English or French interface and prompts, with English as the default.
+
+`.blend` files require Blender and must be exported to GLB before importing into CyAnnota.
+
+<a id="développement"></a>
+
+## Development
+
+Requirement: Node.js 22.13 or newer.
 
 ```bash
 npm install
 npm run dev
 ```
 
-Build Web :
+Web build:
 
 ```bash
 npm run build
 ```
 
-Build Windows portable et installeur :
+Windows portable and installer builds:
 
 ```bash
 npm run desktop:build
 ```
 
-Build statique pour GitHub Pages, séparé des compilations locale et Windows :
+Static build for GitHub Pages, separate from local and Windows builds:
 
 ```bash
 npm run pages:build
 npm run pages:preview
 ```
 
-La sortie se trouve dans `dist/pages`. Par défaut, elle utilise le chemin `/CyAnnota/` ; `CYANNOTA_PAGES_BASE` permet de choisir un autre chemin. Le workflow `.github/workflows/pages.yml` construit et publie le site lors des envois sur `main`, des releases ou d’un lancement manuel. Le déploiement fournit aussi `source.zip`, contenant le code correspondant à la version Web publiée. Dans les paramètres GitHub Pages du dépôt, la source doit être **GitHub Actions**.
+Output is written to `dist/pages`. By default it uses the `/CyAnnota/` base path; set `CYANNOTA_PAGES_BASE` to use another path. The `.github/workflows/pages.yml` workflow builds and publishes the site on pushes to `main`, releases or manual runs. The deployment also provides `source.zip`, containing the source code corresponding to the published Web version. In the repository's GitHub Pages settings, the source must be **GitHub Actions**.
 
-Le contrat d’intégration est décrit dans [`integrations/README.md`](integrations/README.md).
+The integration contract is documented in [`integrations/README.md`](integrations/README.md).
 
-## Licence
+<a id="licence"></a>
+
+## License
 
 Copyright (C) 2026 CyberAlien.
 
-CyAnnota est distribué sous **GNU Affero General Public License v3.0 uniquement** (`AGPL-3.0-only`). Consultez [`LICENSE`](LICENSE).
+CyAnnota is distributed under the **GNU Affero General Public License v3.0 only** (`AGPL-3.0-only`). See [`LICENSE`](LICENSE).
 
-Le SDK autonome [`public/cyannota-integration.js`](public/cyannota-integration.js) est distribué séparément sous licence MIT afin de permettre son intégration dans d’autres logiciels et sites.
+The standalone SDK [`public/cyannota-integration.js`](public/cyannota-integration.js) is distributed separately under the MIT license to allow integration into other software and websites.
 
-Les composants tiers conservent leurs propres licences. Consultez [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), notamment pour FFmpeg et `@ffmpeg/core`.
+Third-party components retain their own licenses. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), including the notices for FFmpeg and `@ffmpeg/core`.
