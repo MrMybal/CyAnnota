@@ -19,10 +19,10 @@ Le cœur WebAssembly contient du code dérivé de FFmpeg. FFmpeg est généralem
 
 ## Interface et archives
 
-- React 19.2.6 et React DOM 19.2.6 — MIT — <https://react.dev/>
-- Next.js 16.2.6 — MIT — <https://nextjs.org/>
-- JSZip 3.10.1 — utilisé selon l’option MIT de sa double licence MIT ou GPL-3.0-or-later — <https://stuk.github.io/jszip/>
-- Electron 44.0.0 — MIT — <https://www.electronjs.org/>
+- React 19.3.0 et React DOM 19.3.0 — MIT — <https://react.dev/>
+- Next.js 16.3.5 — MIT — <https://nextjs.org/>
+- JSZip 3.10.2 — utilisé selon l’option MIT de sa double licence MIT ou GPL-3.0-or-later — <https://stuk.github.io/jszip/>
+- Electron 44.3.0 — MIT — <https://www.electronjs.org/>
 - Three.js 0.186.0 et ses types TypeScript — MIT — <https://threejs.org/>
 
 Le runtime Electron incorpore Chromium et d’autres composants. Les distributions Electron générées conservent les fichiers de licences et notices Chromium livrés avec Electron.
